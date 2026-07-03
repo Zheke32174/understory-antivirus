@@ -578,11 +578,9 @@ object ApkAnalyzer {
         info.services?.forEach { if (it.exported && it.permission == null) n++ }
         info.receivers?.forEach { if (it.exported && it.permission == null) n++ }
         info.providers?.forEach {
-            // Providers guard reads/writes separately; treat "no guard at all"
-            // as unprotected.
-            if (it.exported && it.permission == null && it.readPermission == null &&
-                it.writePermission == null
-            ) {
+            // ProviderInfo has no single `permission` — it guards reads/writes
+            // separately; treat "no guard at all" as unprotected.
+            if (it.exported && it.readPermission == null && it.writePermission == null) {
                 n++
             }
         }
