@@ -14,11 +14,17 @@ import java.security.MessageDigest
  *
  * Two entry points:
  *   - [analyzeUri]: user picks an APK file via SAF; we copy it to
- *     cache, parse it via PackageManager.getPackageArchiveInfo, run
- *     hash + cert + permission analysis. Cache file is deleted after.
+ *     cache (hashing as we go), hand a read-only fd to the isolated
+ *     ApkParserService for the actual parsing (ZIP / manifest / cert
+ *     extraction — the CVE-prone part), then interpret the returned
+ *     facts against KnownBad + RiskRules here. Cache file is deleted
+ *     after. A parser crash on a malformed APK is contained to the
+ *     isolated process and reported as a SUSPICIOUS result.
  *   - [analyzeInstalled]: walk PackageManager-visible installed apps
  *     and run the same analysis on each, surfacing only those with
- *     CRITICAL or HIGH findings to keep the output focused.
+ *     CRITICAL or HIGH findings to keep the output focused. Installed
+ *     apps stay on the PackageManager path — the system already parsed
+ *     them at install time, so there are no untrusted bytes to isolate.
  *
  * What we DON'T do (rootless limits):
  *   - Real-time process monitoring (would need root or accessibility,
@@ -56,13 +62,19 @@ object ApkAnalyzer {
 
     /**
      * Analyze a SAF-picked APK. Caller already has read permission for
-     * the URI; we copy it to cache because PackageManager.
-     * getPackageArchiveInfo wants a real File path. The cache file is
-     * deleted in a finally block so we don't leak APK bytes on disk.
+     * the URI; we copy it to cache because the isolated parser needs a
+     * seekable fd and SAF streams from cloud providers are often pipes.
+     * SHA-256 is computed during the copy (trusted fixed-function code,
+     * safe to run here). The cache file is deleted in a finally block
+     * so we don't leak APK bytes on disk.
+     *
+     * Must be called off the main thread (it already is — the scan
+     * screen runs it on Dispatchers.IO); ApkParserClient enforces that.
      */
     fun analyzeUri(ctx: Context, uri: Uri): Report {
         val cache = File(ctx.cacheDir, "av-scan-${System.nanoTime()}.apk")
         try {
+            val md = MessageDigest.getInstance("SHA-256")
             ctx.contentResolver.openInputStream(uri).use { input ->
                 requireNotNull(input) { "couldn't open APK input stream" }
                 FileOutputStream(cache).use { output ->
@@ -75,11 +87,13 @@ object ApkAnalyzer {
                         require(total <= MAX_APK_BYTES) {
                             "APK too large (>${MAX_APK_BYTES / (1024 * 1024)} MiB)"
                         }
+                        md.update(buf, 0, n)
                         output.write(buf, 0, n)
                     }
                 }
             }
-            return analyzeApkFile(ctx, cache)
+            val apkSha = md.digest().joinToString("") { "%02x".format(it) }
+            return reportFromIsolatedParse(ApkParserClient.parse(ctx, cache), apkSha)
         } finally {
             runCatching { cache.delete() }
         }
@@ -101,7 +115,7 @@ object ApkAnalyzer {
         val applicationInfo = info.applicationInfo
         val apkPath = applicationInfo?.sourceDir ?: return null
         val apkFile = File(apkPath)
-        return analyzeFromPackageInfo(ctx, info, apkFile, isInstalled = true)
+        return analyzeFromPackageInfo(ctx, info, apkFile)
     }
 
     /**
@@ -134,34 +148,91 @@ object ApkAnalyzer {
         )
     }
 
-    private fun analyzeApkFile(ctx: Context, file: File): Report {
-        val pm = ctx.packageManager
-        val info = pm.getPackageArchiveInfo(
-            file.absolutePath,
-            PackageManager.GET_PERMISSIONS or PackageManager.GET_SIGNING_CERTIFICATES,
-        ) ?: return Report(
-            verdict = Verdict.UNKNOWN,
-            packageName = "(unparseable)",
-            versionName = null,
-            versionCode = 0,
-            apkSha256 = sha256(file) ?: "(unhashable)",
-            certSha256 = null,
-            findings = emptyList(),
-            notes = listOf("PackageManager couldn't parse the APK; likely corrupt or malformed."),
+    /**
+     * Turn the isolated parser's raw facts into a Report. null means
+     * the parser process died (or never answered) — per the threat
+     * model that's a *finding*: legitimate APKs don't crash parsers,
+     * malformed-on-purpose ones do.
+     */
+    private fun reportFromIsolatedParse(parsed: ApkParseResult?, apkSha: String): Report {
+        if (parsed == null) {
+            return Report(
+                verdict = Verdict.SUSPICIOUS,
+                packageName = "(parser crashed)",
+                versionName = null,
+                versionCode = 0,
+                apkSha256 = apkSha,
+                certSha256 = null,
+                findings = emptyList(),
+                notes = listOf(
+                    "The APK parser crashed on this file. Malformed-on-purpose APKs " +
+                        "that break parsers are a known malware-delivery trick, so " +
+                        "treat the file as suspicious. The crash was contained to a " +
+                        "sandboxed process with no permissions; this app is fine.",
+                ),
+            )
+        }
+        if (ApkParseResult.FLAG_BAD_ZIP in parsed.flags ||
+            ApkParseResult.FLAG_BAD_MANIFEST in parsed.flags
+        ) {
+            return Report(
+                verdict = Verdict.UNKNOWN,
+                packageName = "(unparseable)",
+                versionName = null,
+                versionCode = 0,
+                apkSha256 = apkSha,
+                certSha256 = parsed.certSha256s.firstOrNull(),
+                findings = emptyList(),
+                notes = listOf("Couldn't parse the APK; likely corrupt or malformed."),
+            )
+        }
+        val findings = RiskRules.analyze(parsed.permissions.toSet())
+        val notes = mutableListOf<String>()
+        val dupManifest = ApkParseResult.FLAG_DUPLICATE_MANIFEST in parsed.flags
+        if (dupManifest) {
+            notes += "APK contains more than one AndroidManifest.xml entry — a " +
+                "parser-confusion trick (different parsers see different manifests). " +
+                "Legitimate build tools never produce this."
+        }
+        if (ApkParseResult.FLAG_NO_CERT in parsed.flags) {
+            notes += "No signing certificate found; Android would refuse to install this APK."
+        }
+        val verdict = when {
+            KnownBad.isKnownBadApk(apkSha) -> {
+                notes += "APK hash matches the built-in deny-list."
+                Verdict.KNOWN_BAD
+            }
+            parsed.certSha256s.any { KnownBad.isKnownBadCert(it) } -> {
+                notes += "Signing cert matches the built-in deny-list."
+                Verdict.KNOWN_BAD
+            }
+            dupManifest -> Verdict.SUSPICIOUS
+            findings.any { it.severity == RiskRules.Severity.CRITICAL } -> Verdict.SUSPICIOUS
+            findings.any { it.severity == RiskRules.Severity.HIGH } -> Verdict.SUSPICIOUS
+            else -> Verdict.CLEAN
+        }
+        return Report(
+            verdict = verdict,
+            packageName = parsed.packageName ?: "(unknown)",
+            versionName = parsed.versionName,
+            versionCode = parsed.versionCode,
+            apkSha256 = apkSha,
+            certSha256 = parsed.certSha256s.firstOrNull(),
+            findings = findings,
+            notes = notes,
         )
-        // PackageManager.getPackageArchiveInfo doesn't always populate
-        // applicationInfo.sourceDir/publicSourceDir; set them so any
-        // downstream consumer gets a valid path.
-        info.applicationInfo?.sourceDir = file.absolutePath
-        info.applicationInfo?.publicSourceDir = file.absolutePath
-        return analyzeFromPackageInfo(ctx, info, file, isInstalled = false)
     }
 
+    /**
+     * Installed-app analysis. Only reached from [analyzeInstalled] —
+     * the data comes from PackageManager (parsed by the system at
+     * install time), never from untrusted APK bytes; those go through
+     * the isolated parser instead.
+     */
     private fun analyzeFromPackageInfo(
         ctx: Context,
         info: PackageInfo,
         apkFile: File,
-        isInstalled: Boolean,
     ): Report {
         val apkSha = sha256(apkFile)
         val certSha = signingCertSha256(info)
@@ -171,9 +242,8 @@ object ApkAnalyzer {
         // Hidden-launcher detection (Trustd-style): user-installed apps with
         // no launcher entry are invisible from the app drawer. Some legitimate
         // cases (services, plugins, background utilities) but textbook
-        // stalkerware property — hiding from the target. Only check installed
-        // apps; SAF-picked APK archives have no installed-state to query.
-        if (isInstalled) {
+        // stalkerware property — hiding from the target.
+        run {
             val pkg = info.packageName
             val applicationInfo = info.applicationInfo
             if (pkg != null && applicationInfo != null) {
