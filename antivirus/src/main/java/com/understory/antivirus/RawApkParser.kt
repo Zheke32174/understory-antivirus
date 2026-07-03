@@ -40,7 +40,7 @@ internal object RawApkParser {
     /** Binary AndroidManifest.xml over this size is not a real manifest. */
     private const val MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
-    /** Cap per META-INF/*.{RSA,DSA,EC} PKCS#7 blob (v1 signatures). */
+    /** Cap per META-INF PKCS#7 blob (v1 signatures: .RSA, .DSA, .EC). */
     private const val MAX_V1_CERT_BYTES = 1024 * 1024
 
     /** Entry-count cap so a crafted central directory can't spin us. */
