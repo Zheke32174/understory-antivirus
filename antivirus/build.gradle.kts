@@ -49,6 +49,10 @@ android {
 
     buildFeatures {
         compose = true
+        // BuildConfig.FLAVOR gates the eng-only Diagnostics affordance out of
+        // the shipping (prod) UI. AGP 8 disables BuildConfig generation by
+        // default, so it is enabled explicitly here.
+        buildConfig = true
     }
 
     packaging {

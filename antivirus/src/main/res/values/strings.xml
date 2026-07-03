@@ -91,4 +91,56 @@
 
     <!-- Generic -->
     <string name="av_back">Back</string>
+
+    <!-- ==== UI-polish pass: navigation, chrome, section headers, states ==== -->
+
+    <!-- Bottom navigation destinations -->
+    <string name="av_nav_scan">Scan</string>
+    <string name="av_nav_apps">Apps</string>
+    <string name="av_nav_defs">Definitions</string>
+
+    <!-- Top-bar / nav content descriptions -->
+    <string name="cd_nav_scan">Scan an APK</string>
+    <string name="cd_nav_apps">Audit installed apps</string>
+    <string name="cd_nav_defs">Definitions and settings</string>
+    <string name="cd_diagnostics">Open diagnostics (engineering build)</string>
+    <string name="cd_scan_apk_fab">Scan an APK file</string>
+    <string name="cd_severity">Severity</string>
+
+    <!-- Scan home -->
+    <string name="av_scan_hero_title">Scan a sideloaded APK</string>
+    <string name="av_scan_hero_body">Pick an APK file to inspect it offline — its signing cert, permission shape, and deny-list status. Nothing leaves your device.</string>
+    <string name="av_scan_hero_action">Scan an APK file</string>
+    <string name="av_scan_progress_indeterminate">Inspecting the APK…</string>
+    <string name="av_section_result">Scan result</string>
+    <string name="av_section_posture">Device posture</string>
+    <string name="av_section_findings">Findings</string>
+    <string name="av_result_clear">Clear result</string>
+    <string name="av_scan_empty_title">No scan yet</string>
+    <string name="av_scan_empty_body">Tap the scan button below to inspect a sideloaded APK file. APK Check runs entirely on your device, alongside Google Play Protect.</string>
+
+    <!-- Severity labels (finding-card leading) -->
+    <string name="av_sev_critical">Critical</string>
+    <string name="av_sev_high">High</string>
+    <string name="av_sev_medium">Medium</string>
+    <string name="av_sev_low">Low</string>
+
+    <!-- Report meta -->
+    <string name="av_report_version">Version %1$s (%2$d)</string>
+    <string name="av_report_apk_sha">APK SHA-256: %1$s…</string>
+    <string name="av_report_cert_sha">Signing cert SHA-256: %1$s…</string>
+    <string name="av_verdict_clean">Clean</string>
+    <string name="av_verdict_suspicious">Suspicious</string>
+    <string name="av_verdict_known_bad">Known bad</string>
+    <string name="av_verdict_unknown">Unknown</string>
+
+    <!-- Apps (audit) section -->
+    <string name="av_apps_title">Installed apps</string>
+    <string name="av_apps_flagged_header">Flagged apps</string>
+
+    <!-- Definitions section -->
+    <string name="av_defs_title">Definitions &amp; settings</string>
+    <string name="av_section_defs">Deny-list definitions</string>
+    <string name="av_section_scanning">Background scanning</string>
+    <string name="av_section_about">About</string>
 </resources>

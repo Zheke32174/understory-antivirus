@@ -1,7 +1,6 @@
 package com.understory.antivirus
 
 import android.Manifest
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -14,7 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -25,12 +24,23 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -40,10 +50,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -52,15 +61,16 @@ import com.understory.security.DiagnosticsDump
 import com.understory.security.DiagnosticsScreen
 import com.understory.security.KeepAliveBackHandler
 import com.understory.security.SecureButton
-import com.understory.security.SecureOutlinedButton
-import com.understory.security.SuiteStatusFooter
 import com.understory.security.Tamper
 import com.understory.security.TestingMode
 import com.understory.security.TransientFlight
 import com.understory.security.ui.Bg
 import com.understory.security.ui.components.EmptyState
+import com.understory.security.ui.components.ErrorState
 import com.understory.security.ui.components.FatalScreen
+import com.understory.security.ui.components.LoadingState
 import com.understory.security.ui.components.SuiteCard
+import com.understory.security.ui.components.SuiteSectionHeader
 import com.understory.security.ui.theme.UnderstoryAccent
 import com.understory.security.ui.theme.UnderstoryTheme
 import kotlinx.coroutines.launch
@@ -115,12 +125,7 @@ class MainActivity : ComponentActivity() {
                 if (reason != null) {
                     TamperBlockScreen(reason = reason, onClose = { finishAndRemoveTask() })
                 } else {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.background,
-                    ) {
-                        AntivirusRoot()
-                    }
+                    AntivirusApp()
                 }
             }
         }
@@ -199,88 +204,511 @@ private fun TamperBlockScreen(reason: String, onClose: () -> Unit) {
     }
 }
 
-private enum class Mode { Initial, ScanApk, AuditInstalled, Diagnostics }
+/** Top-level destinations shown in the NavigationBar. */
+private enum class Dest(
+    val labelRes: Int,
+    val cdRes: Int,
+    val icon: ImageVector,
+) {
+    Scan(R.string.av_nav_scan, R.string.cd_nav_scan, Icons.Filled.Shield),
+    Apps(R.string.av_nav_apps, R.string.cd_nav_apps, Icons.Filled.Apps),
+    Definitions(R.string.av_nav_defs, R.string.cd_nav_defs, Icons.Filled.FolderOpen),
+}
 
+/**
+ * The shipping app shell. A Material3 [Scaffold] with a per-destination
+ * [TopAppBar], a bottom [NavigationBar] over three top-level sections, and a
+ * scan [FloatingActionButton] on the Scan tab.
+ *
+ * Diagnostics is an ENGINEERING-BUILD-ONLY affordance: the top-bar bug-report
+ * action and the DiagnosticsScreen route only exist when
+ * `BuildConfig.FLAVOR == "eng"`. The shipped prod app exposes no diagnostics
+ * entry point and no diagnostics dump.
+ *
+ * The dev-looking SuiteStatusFooter (tier/peer/caps smoke-test strip) is
+ * deliberately NOT part of this chrome: this shell owns its own bottom bar (the
+ * NavigationBar) and never composes SuiteStatusFooter, so it appears on no
+ * screen in any build. The shipping face carries only user-facing security
+ * content.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AntivirusRoot() {
-    var modeName by rememberSaveable { mutableStateOf(Mode.Initial.name) }
-    val mode = remember(modeName) { Mode.valueOf(modeName) }
-    val setMode: (Mode) -> Unit = {
-        Diagnostics.log("antivirus.Root", "mode transition: $modeName → ${it.name}")
-        modeName = it.name
+private fun AntivirusApp() {
+    var destName by rememberSaveable { mutableStateOf(Dest.Scan.name) }
+    val dest = remember(destName) { Dest.valueOf(destName) }
+    // Eng-only: whether the diagnostics sub-screen is currently shown.
+    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
+    val isEng = BuildConfig.FLAVOR == "eng"
+
+    // Keep this composable alive on back at the top level; children override.
+    KeepAliveBackHandler("antivirus.App")
+
+    if (isEng && showDiagnostics) {
+        BackHandler { showDiagnostics = false }
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background,
+        ) {
+            DiagnosticsScreen(onBack = { showDiagnostics = false })
+        }
+        return
     }
-    val backToInitial: () -> Unit = { setMode(Mode.Initial) }
-    when (mode) {
-        Mode.Initial -> {
-            KeepAliveBackHandler("antivirus.Root.Initial")
-            InitialScreen(
-                onScanApk = { setMode(Mode.ScanApk) },
-                onAuditInstalled = { setMode(Mode.AuditInstalled) },
-                onDiagnostics = { setMode(Mode.Diagnostics) },
+
+    val titleRes = when (dest) {
+        Dest.Scan -> R.string.app_name
+        Dest.Apps -> R.string.av_apps_title
+        Dest.Definitions -> R.string.av_defs_title
+    }
+
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(titleRes), style = MaterialTheme.typography.titleLarge) },
+                actions = {
+                    // Diagnostics affordance — ENG BUILDS ONLY. In prod this
+                    // block is compiled but the guard is false, so no
+                    // diagnostics icon is ever shown.
+                    if (isEng) {
+                        IconButton(onClick = { showDiagnostics = true }) {
+                            Icon(
+                                imageVector = Icons.Filled.BugReport,
+                                contentDescription = stringResource(R.string.cd_diagnostics),
+                            )
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    actionIconContentColor = MaterialTheme.colorScheme.onSurface,
+                ),
             )
-        }
-        Mode.ScanApk -> {
-            BackHandler { backToInitial() }
-            ScanApkScreen(onBack = backToInitial)
-        }
-        Mode.AuditInstalled -> {
-            BackHandler { backToInitial() }
-            AuditInstalledScreen(onBack = backToInitial)
-        }
-        Mode.Diagnostics -> {
-            BackHandler { backToInitial() }
-            DiagnosticsScreen(onBack = backToInitial)
+        },
+        bottomBar = {
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                for (d in Dest.entries) {
+                    val selected = d == dest
+                    NavigationBarItem(
+                        selected = selected,
+                        onClick = {
+                            if (d != dest) {
+                                Diagnostics.log("antivirus.App", "nav ${dest.name} → ${d.name}")
+                                destName = d.name
+                            }
+                        },
+                        icon = {
+                            Icon(
+                                imageVector = d.icon,
+                                contentDescription = stringResource(d.cdRes),
+                            )
+                        },
+                        label = { Text(stringResource(d.labelRes)) },
+                    )
+                }
+            }
+        },
+    ) { pad ->
+        when (dest) {
+            Dest.Scan -> ScanSection(pad)
+            Dest.Apps -> AppsSection(pad)
+            Dest.Definitions -> DefinitionsSection(pad)
         }
     }
 }
 
+/**
+ * Holds scan/audit results across configuration change. Process death is
+ * mitigated by re-derivable state (results are recomputed by re-running).
+ */
+class ScanViewModel : ViewModel() {
+    var scanReport by mutableStateOf<ApkAnalyzer.Report?>(null)
+    var scanError by mutableStateOf<String?>(null)
+    var scanning by mutableStateOf(false)
+    var auditReports by mutableStateOf<List<ApkAnalyzer.Report>?>(null)
+    var auditError by mutableStateOf<String?>(null)
+    var auditSelected by mutableStateOf<ApkAnalyzer.Report?>(null)
+    var auditWorking by mutableStateOf(false)
+    var auditProgress by mutableStateOf(0 to 0)
+}
+
+// ------------------------------------------------------------------
+// Scan (home) — the scanner face.
+// ------------------------------------------------------------------
+
 @Composable
-private fun InitialScreen(
-    onScanApk: () -> Unit,
-    onAuditInstalled: () -> Unit,
-    onDiagnostics: () -> Unit,
-) {
+private fun ScanSection(pad: PaddingValues) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    val vm: ScanViewModel = viewModel()
 
     val playProtect = remember { PlayProtectStatus.check(ctx) }
-    var defsMeta by remember { mutableStateOf<BlocklistStore.Meta?>(null) }
     var tamperInfo by remember { mutableStateOf<TamperFindings.TamperInfo?>(null) }
-    var importResult by remember { mutableStateOf<String?>(null) }
-    var importIsError by remember { mutableStateOf(false) }
-    // When an import is refused for being an older serial, we hold the picked
-    // URI so the user can confirm an explicit "import older anyway".
-    var pendingOlderUri by remember { mutableStateOf<Uri?>(null) }
-    var periodicOn by remember { mutableStateOf(PeriodicScan.isEnabled(ctx)) }
-    var alertsGranted by remember { mutableStateOf(PeriodicScan.alertsAllowed(ctx)) }
-    // Freshness-while-open (§5.1): a context-registered PACKAGE_ADDED receiver,
-    // alive only while this screen is composed (foreground). This is the only
-    // rootless place a PACKAGE_ADDED receiver still fires. NOT background
-    // real-time — the banner copy says so.
     var freshInstall by remember { mutableStateOf<ApkAnalyzer.Report?>(null) }
     OnNewInstall { report -> freshInstall = report }
 
-    // Load definitions meta + tamper info off the main thread on first show.
+    LaunchedEffect(Unit) {
+        val report = withContext(Bg.io) { Tamper.check(ctx.applicationContext) }
+        tamperInfo = withContext(Bg.io) { TamperFindings.build(ctx, report) }
+    }
+
+    val pickApk = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri: Uri? ->
+        TransientFlight.end()
+        Diagnostics.log("antivirus.Scan", "pickApk result: uri=${if (uri != null) "non-null" else "null"}")
+        if (uri == null) return@rememberLauncherForActivityResult
+        vm.scanning = true
+        scope.launch {
+            val result = withContext(Bg.io) { runCatching { ApkAnalyzer.analyzeUri(ctx, uri) } }
+            result
+                .onSuccess { vm.scanReport = it; vm.scanError = null }
+                .onFailure {
+                    Diagnostics.error("antivirus.Scan", "scan failed: ${it.javaClass.simpleName}: ${it.message}")
+                    vm.scanError = "Scan failed: ${it.message ?: it.javaClass.simpleName}"
+                }
+            vm.scanning = false
+        }
+    }
+
+    val launchPicker: () -> Unit = {
+        if (!vm.scanning) {
+            Diagnostics.log("antivirus.Scan", "Pick APK file: tap")
+            TransientFlight.begin()
+            runCatching { pickApk.launch(arrayOf("*/*")) }
+                .onFailure {
+                    TransientFlight.end()
+                    vm.scanError = "Couldn't open file picker: ${it.message}"
+                }
+        }
+    }
+
+    Scaffold(
+        modifier = Modifier.padding(pad),
+        containerColor = MaterialTheme.colorScheme.background,
+        floatingActionButton = {
+            if (!vm.scanning) {
+                FloatingActionButton(onClick = launchPicker) {
+                    Icon(
+                        imageVector = Icons.Filled.FolderOpen,
+                        contentDescription = stringResource(R.string.cd_scan_apk_fab),
+                    )
+                }
+            }
+        },
+    ) { inner ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(inner)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = UnderstoryTheme.spacing.lg),
+            verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.md),
+        ) {
+            Spacer(Modifier.height(UnderstoryTheme.spacing.sm))
+            PositioningBanner()
+
+            // Scan hero: the prominent scan action + progress while scanning.
+            ScanHeroCard(
+                scanning = vm.scanning,
+                onScan = launchPicker,
+            )
+
+            freshInstall?.let { FreshInstallCard(it) }
+
+            // Scan result (findings ranked CRITICAL-first).
+            vm.scanError?.let { err ->
+                InlineErrorCard(message = err, onRetry = launchPicker)
+            }
+            vm.scanReport?.let { report ->
+                SuiteSectionHeader(stringResource(R.string.av_section_result))
+                ReportHeaderCard(report)
+                if (report.findings.isEmpty()) {
+                    SuiteCard {
+                        Text(
+                            stringResource(R.string.av_no_findings),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = UnderstoryTheme.semantic.success,
+                        )
+                    }
+                } else {
+                    SuiteSectionHeader(stringResource(R.string.av_section_findings))
+                    report.findings.forEach { FindingCard(it) }
+                }
+            }
+
+            // Device posture: Play Protect + tamper/root tooling.
+            SuiteSectionHeader(stringResource(R.string.av_section_posture))
+            PlayProtectCard(playProtect)
+            tamperInfo?.let { TamperCard(it) }
+
+            SuiteCard {
+                Text(
+                    stringResource(R.string.av_home_catches),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            // Bottom breathing room so the FAB never covers the last card.
+            Spacer(Modifier.height(UnderstoryTheme.spacing.xxl))
+        }
+    }
+}
+
+/**
+ * The prominent scan call-to-action. Shows a determinate-feeling progress bar
+ * with a label while a scan is in flight, and a big primary button otherwise.
+ * (The isolated parse has no byte-progress signal, so the in-flight bar is the
+ * indeterminate [LinearProgressIndicator] with an honest "inspecting" label.)
+ */
+@Composable
+private fun ScanHeroCard(scanning: Boolean, onScan: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(UnderstoryTheme.spacing.lg),
+            verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.sm),
+        ) {
+            Text(
+                stringResource(R.string.av_scan_hero_title),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                stringResource(R.string.av_scan_hero_body),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (scanning) {
+                Text(
+                    stringResource(R.string.av_scan_progress_indeterminate),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            } else {
+                SecureButton(onClick = onScan, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.av_scan_hero_action))
+                }
+            }
+        }
+    }
+}
+
+/** Fresh-install banner (§5.1 freshness-while-open) as a token-native card. */
+@Composable
+private fun FreshInstallCard(report: ApkAnalyzer.Report) {
+    SuiteCard {
+        Text(
+            stringResource(R.string.av_fresh_install, report.packageName, report.verdict.name),
+            style = MaterialTheme.typography.bodyMedium,
+            color = verdictAccent(report.verdict),
+        )
+        report.findings.firstOrNull()?.let { f ->
+            Spacer(Modifier.height(UnderstoryTheme.spacing.xs))
+            Text(
+                f.title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = severityAccent(f.severity),
+            )
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// Apps — audit installed apps.
+// ------------------------------------------------------------------
+
+@Composable
+private fun AppsSection(pad: PaddingValues) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val vm: ScanViewModel = viewModel()
+
+    val runAudit: () -> Unit = {
+        if (!vm.auditWorking) {
+            vm.auditWorking = true
+            vm.auditSelected = null
+            scope.launch {
+                val result = withContext(Bg.io) {
+                    runCatching {
+                        ApkAnalyzer.auditInstalled(ctx) { done, total -> vm.auditProgress = done to total }
+                    }
+                }
+                result
+                    .onSuccess { vm.auditReports = it; vm.auditError = null }
+                    .onFailure { vm.auditError = "Audit failed: ${it.message ?: it.javaClass.simpleName}" }
+                vm.auditWorking = false
+            }
+        }
+    }
+
+    val selected = vm.auditSelected
+    if (selected != null) {
+        BackHandler { vm.auditSelected = null }
+        AuditDetail(
+            report = selected,
+            modifier = Modifier.padding(pad),
+            onBack = { vm.auditSelected = null },
+        )
+        return
+    }
+
+    val reports = vm.auditReports
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(pad)
+            .padding(horizontal = UnderstoryTheme.spacing.lg),
+    ) {
+        when {
+            vm.auditWorking -> {
+                val (done, total) = vm.auditProgress
+                Column(Modifier.fillMaxSize()) {
+                    LoadingState(
+                        label = if (total > 0) stringResource(R.string.av_auditing_progress, done, total)
+                        else stringResource(R.string.av_scanning),
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (total > 0) {
+                        LinearProgressIndicator(
+                            progress = { done.toFloat() / total },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = UnderstoryTheme.spacing.lg),
+                        )
+                    }
+                }
+            }
+            vm.auditError != null -> {
+                Column(Modifier.fillMaxSize()) {
+                    ErrorState(
+                        message = vm.auditError!!,
+                        onRetry = runAudit,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            reports == null -> {
+                Column(Modifier.fillMaxSize()) {
+                    EmptyState(
+                        title = stringResource(R.string.av_audit_title),
+                        body = stringResource(R.string.av_audit_intro),
+                        icon = Icons.Filled.Apps,
+                        modifier = Modifier.weight(1f),
+                        action = {
+                            SecureButton(onClick = runAudit, modifier = Modifier.fillMaxWidth()) {
+                                Text(stringResource(R.string.av_audit_run))
+                            }
+                        },
+                    )
+                }
+            }
+            reports.isEmpty() -> {
+                Column(Modifier.fillMaxSize()) {
+                    EmptyState(
+                        title = stringResource(R.string.av_audit_clean_title),
+                        body = stringResource(R.string.av_audit_clean_body),
+                        icon = Icons.Filled.Shield,
+                        modifier = Modifier.weight(1f),
+                        action = {
+                            SecureButton(onClick = runAudit, modifier = Modifier.fillMaxWidth()) {
+                                Text(stringResource(R.string.av_audit_rerun))
+                            }
+                        },
+                    )
+                }
+            }
+            else -> {
+                SuiteSectionHeader(stringResource(R.string.av_audit_flagged_count, reports.size))
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.sm),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                ) {
+                    items(reports, key = { it.packageName }) { r ->
+                        AuditRowCard(r, onClick = { vm.auditSelected = r })
+                    }
+                }
+                SecureButton(
+                    onClick = runAudit,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = UnderstoryTheme.spacing.md),
+                ) {
+                    Text(stringResource(R.string.av_audit_rerun))
+                }
+            }
+        }
+    }
+}
+
+/** Detail view for one flagged installed app: header + ranked finding cards. */
+@Composable
+private fun AuditDetail(
+    report: ApkAnalyzer.Report,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = UnderstoryTheme.spacing.lg),
+        verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.md),
+    ) {
+        Spacer(Modifier.height(UnderstoryTheme.spacing.sm))
+        ReportHeaderCard(report)
+        if (report.findings.isEmpty()) {
+            SuiteCard {
+                Text(
+                    stringResource(R.string.av_no_findings),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = UnderstoryTheme.semantic.success,
+                )
+            }
+        } else {
+            SuiteSectionHeader(stringResource(R.string.av_section_findings))
+            report.findings.forEach { FindingCard(it) }
+        }
+        SecureButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(R.string.av_audit_back_to_list))
+        }
+        Spacer(Modifier.height(UnderstoryTheme.spacing.lg))
+    }
+}
+
+// ------------------------------------------------------------------
+// Definitions — deny-list status, import, periodic scanning.
+// ------------------------------------------------------------------
+
+@Composable
+private fun DefinitionsSection(pad: PaddingValues) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var defsMeta by remember { mutableStateOf<BlocklistStore.Meta?>(null) }
+    var importResult by remember { mutableStateOf<String?>(null) }
+    var importIsError by remember { mutableStateOf(false) }
+    var pendingOlderUri by remember { mutableStateOf<Uri?>(null) }
+    var periodicOn by remember { mutableStateOf(PeriodicScan.isEnabled(ctx)) }
+    var alertsGranted by remember { mutableStateOf(PeriodicScan.alertsAllowed(ctx)) }
+
     LaunchedEffect(Unit) {
         withContext(Bg.io) { BlocklistStore.ensureLoaded(ctx) }
         defsMeta = BlocklistStore.meta()
-        val report = withContext(Bg.io) { Tamper.check(ctx.applicationContext) }
-        tamperInfo = withContext(Bg.io) { TamperFindings.build(ctx, report) }
     }
 
     val requestNotif = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         alertsGranted = granted
-        // Whether granted or denied, periodic scanning proceeds; alerts just
-        // degrade if denied. Enable the worker now.
         PeriodicScan.setEnabled(ctx, true)
         periodicOn = true
     }
 
-    // Shared import runner: reads the URI off-main, imports, and maps the
-    // outcome to an honest card state. allowOlder=true is the explicit
-    // "import older anyway" confirm path.
     val runImport: (Uri, Boolean) -> Unit = { uri, allowOlder ->
         scope.launch {
             val outcome = withContext(Bg.io) {
@@ -323,35 +751,14 @@ private fun InitialScreen(
     }
 
     Column(
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(pad)
             .verticalScroll(rememberScrollState())
-            .padding(UnderstoryTheme.spacing.lg),
-        verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.md),
+            .padding(horizontal = UnderstoryTheme.spacing.lg),
+        verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.sm),
     ) {
-        Text(
-            stringResource(R.string.app_name),
-            style = MaterialTheme.typography.headlineSmall,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        PositioningBanner()
-        freshInstall?.let { report ->
-            SuiteCard {
-                Text(
-                    stringResource(R.string.av_fresh_install, report.packageName, report.verdict.name),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = verdictAccent(report.verdict),
-                )
-                report.findings.firstOrNull()?.let { f ->
-                    Text(
-                        stringResource(R.string.av_finding_line, f.severity.name, f.title),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = severityAccent(f.severity),
-                    )
-                }
-            }
-        }
-        PlayProtectCard(playProtect)
-        tamperInfo?.let { TamperCard(it) }
+        SuiteSectionHeader(stringResource(R.string.av_section_defs))
         DefinitionsCard(
             meta = defsMeta,
             onImport = {
@@ -363,13 +770,13 @@ private fun InitialScreen(
             isError = importIsError,
             onImportOlder = pendingOlderUri?.let { uri -> { runImport(uri, true) } },
         )
+
+        SuiteSectionHeader(stringResource(R.string.av_section_scanning))
         PeriodicScanToggle(
             enabled = periodicOn,
             alertsGranted = alertsGranted,
             onToggle = { on ->
                 if (on) {
-                    // Request POST_NOTIFICATIONS (opt-in); the worker is enabled
-                    // in the permission callback regardless of grant.
                     if (PeriodicScan.alertsAllowed(ctx)) {
                         PeriodicScan.setEnabled(ctx, true); periodicOn = true; alertsGranted = true
                     } else {
@@ -380,6 +787,8 @@ private fun InitialScreen(
                 }
             },
         )
+
+        SuiteSectionHeader(stringResource(R.string.av_section_about))
         SuiteCard {
             Text(
                 stringResource(R.string.av_home_catches),
@@ -387,333 +796,8 @@ private fun InitialScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        SecureButton(onClick = onScanApk, modifier = Modifier.fillMaxWidth()) {
-            Text(stringResource(R.string.av_scan_apk))
-        }
-        SecureOutlinedButton(onClick = onAuditInstalled, modifier = Modifier.fillMaxWidth()) {
-            Text(stringResource(R.string.av_audit_installed))
-        }
-        SecureOutlinedButton(onClick = onDiagnostics, modifier = Modifier.fillMaxWidth()) {
-            Text(stringResource(R.string.av_diagnostics))
-        }
-        SuiteStatusFooter()
+        Spacer(Modifier.height(UnderstoryTheme.spacing.lg))
     }
-}
-
-/**
- * Holds scan/audit results across configuration change AND process death is
- * mitigated by re-derivable state; the Report list is transient (recomputed by
- * re-running) but the in-flight results survive recreation here.
- */
-class ScanViewModel : ViewModel() {
-    var scanReport by mutableStateOf<ApkAnalyzer.Report?>(null)
-    var scanError by mutableStateOf<String?>(null)
-    var auditReports by mutableStateOf<List<ApkAnalyzer.Report>?>(null)
-    var auditError by mutableStateOf<String?>(null)
-    var auditSelected by mutableStateOf<ApkAnalyzer.Report?>(null)
-}
-
-@Composable
-private fun ScanApkScreen(onBack: () -> Unit) {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val vm: ScanViewModel = viewModel()
-    var working by remember { mutableStateOf(false) }
-
-    val pickApk = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument(),
-    ) { uri: Uri? ->
-        TransientFlight.end()
-        Diagnostics.log("antivirus.ScanApk", "pickApk result: uri=${if (uri != null) "non-null" else "null"}")
-        if (uri == null) return@rememberLauncherForActivityResult
-        working = true
-        scope.launch {
-            val result = withContext(Bg.io) { runCatching { ApkAnalyzer.analyzeUri(ctx, uri) } }
-            result
-                .onSuccess { vm.scanReport = it; vm.scanError = null }
-                .onFailure {
-                    Diagnostics.error("antivirus.ScanApk", "scan failed: ${it.javaClass.simpleName}: ${it.message}")
-                    vm.scanError = "Scan failed: ${it.message ?: it.javaClass.simpleName}"
-                }
-            working = false
-        }
-    }
-
-    Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-            .padding(UnderstoryTheme.spacing.lg),
-        verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.sm),
-    ) {
-        Text(
-            stringResource(R.string.av_scan_title),
-            style = MaterialTheme.typography.headlineSmall,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        SecureButton(
-            onClick = {
-                if (working) return@SecureButton
-                Diagnostics.log("antivirus.ScanApk", "Pick APK file: tap")
-                TransientFlight.begin()
-                runCatching { pickApk.launch(arrayOf("*/*")) }
-                    .onFailure {
-                        TransientFlight.end()
-                        vm.scanError = "Couldn't open file picker: ${it.message}"
-                    }
-            },
-            enabled = !working,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(if (working) stringResource(R.string.av_scanning) else stringResource(R.string.av_scan_pick))
-        }
-        if (working) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        }
-        vm.scanError?.let {
-            Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-        }
-        vm.scanReport?.let { ReportView(it) }
-        Spacer(Modifier.height(UnderstoryTheme.spacing.sm))
-        SecureOutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
-            Text(stringResource(R.string.av_back))
-        }
-    }
-}
-
-@Composable
-private fun AuditInstalledScreen(onBack: () -> Unit) {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val vm: ScanViewModel = viewModel()
-    var working by remember { mutableStateOf(false) }
-    var progress by remember { mutableStateOf(0 to 0) }
-
-    val runAudit: () -> Unit = {
-        if (!working) {
-            working = true
-            vm.auditSelected = null
-            scope.launch {
-                val result = withContext(Bg.io) {
-                    runCatching {
-                        ApkAnalyzer.auditInstalled(ctx) { done, total -> progress = done to total }
-                    }
-                }
-                result
-                    .onSuccess { vm.auditReports = it; vm.auditError = null }
-                    .onFailure { vm.auditError = "Audit failed: ${it.message ?: it.javaClass.simpleName}" }
-                working = false
-            }
-        }
-    }
-
-    Column(
-        modifier = Modifier.fillMaxSize().padding(UnderstoryTheme.spacing.lg),
-        verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.sm),
-    ) {
-        Text(
-            stringResource(R.string.av_audit_title),
-            style = MaterialTheme.typography.headlineSmall,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        val reports = vm.auditReports
-        val selected = vm.auditSelected
-        when {
-            reports == null -> {
-                Text(
-                    stringResource(R.string.av_audit_intro),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                SecureButton(onClick = runAudit, enabled = !working, modifier = Modifier.fillMaxWidth()) {
-                    Text(if (working) stringResource(R.string.av_auditing_progress, progress.first, progress.second)
-                    else stringResource(R.string.av_audit_run))
-                }
-                if (working && progress.second > 0) {
-                    LinearProgressIndicator(
-                        progress = { progress.first.toFloat() / progress.second },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                vm.auditError?.let {
-                    Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                }
-            }
-            selected != null -> {
-                Column(
-                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.sm),
-                ) {
-                    ReportView(selected)
-                    SecureOutlinedButton(
-                        onClick = { vm.auditSelected = null },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text(stringResource(R.string.av_audit_back_to_list)) }
-                }
-            }
-            reports.isEmpty() -> {
-                Column(Modifier.weight(1f)) {
-                    EmptyState(
-                        title = stringResource(R.string.av_audit_clean_title),
-                        body = stringResource(R.string.av_audit_clean_body),
-                    )
-                }
-                SecureOutlinedButton(onClick = runAudit, modifier = Modifier.fillMaxWidth()) {
-                    Text(stringResource(R.string.av_audit_rerun))
-                }
-            }
-            else -> {
-                Text(
-                    stringResource(R.string.av_audit_flagged_count, reports.size),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.xs),
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                ) {
-                    items(reports, key = { it.packageName }) { r ->
-                        AuditRow(r, onClick = { vm.auditSelected = r })
-                    }
-                }
-                SecureOutlinedButton(onClick = runAudit, modifier = Modifier.fillMaxWidth()) {
-                    Text(stringResource(R.string.av_audit_rerun))
-                }
-            }
-        }
-        SecureOutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
-            Text(stringResource(R.string.av_back))
-        }
-    }
-}
-
-/** D#5 fix: whole-row clickable card + trailing chevron, no overlaid button. */
-@Composable
-private fun AuditRow(r: ApkAnalyzer.Report, onClick: () -> Unit) {
-    SuiteCard(onClick = onClick) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    r.packageName,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                r.findings.firstOrNull()?.let { f ->
-                    Text(
-                        stringResource(R.string.av_finding_line, f.severity.name, f.title),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = severityAccent(f.severity),
-                    )
-                }
-            }
-            Text(
-                r.verdict.name,
-                style = MaterialTheme.typography.bodyMedium,
-                color = verdictAccent(r.verdict),
-            )
-            Icon(
-                imageVector = Icons.Filled.ChevronRight,
-                contentDescription = stringResource(R.string.av_audit_details),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun ReportView(r: ApkAnalyzer.Report) {
-    val ctx = LocalContext.current
-    SuiteCard {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                r.packageName,
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                r.verdict.name,
-                style = MaterialTheme.typography.titleMedium,
-                color = verdictAccent(r.verdict),
-            )
-        }
-        Text(
-            "${r.versionName ?: "?"} (${r.versionCode})",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            "apk sha256: " + (r.apkSha256?.take(16)?.plus("…") ?: stringResource(R.string.av_apk_not_hashed)),
-            style = MaterialTheme.typography.bodyMedium,
-            color = UnderstoryTheme.semantic.dim,
-        )
-        r.certSha256?.let {
-            Text(
-                "cert sha256: ${it.take(16)}…",
-                style = MaterialTheme.typography.bodyMedium,
-                color = UnderstoryTheme.semantic.dim,
-            )
-        }
-        r.notes.forEach {
-            Text(it, style = MaterialTheme.typography.bodyMedium, color = UnderstoryTheme.semantic.warning)
-        }
-        if (r.findings.isEmpty()) {
-            Text(
-                stringResource(R.string.av_no_findings),
-                style = MaterialTheme.typography.bodyMedium,
-                color = UnderstoryTheme.semantic.success,
-            )
-        } else {
-            Text(
-                stringResource(R.string.av_findings),
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            r.findings.forEach { f ->
-                Surface(
-                    color = MaterialTheme.colorScheme.surface,
-                    shape = MaterialTheme.shapes.small,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.padding(UnderstoryTheme.spacing.sm)) {
-                        Text(
-                            stringResource(R.string.av_finding_line, f.severity.name, f.title),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = severityAccent(f.severity),
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Text(
-                            f.explain,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        f.deepLink?.let { target ->
-                            val canOpen = SettingsDeepLinks.canOpen(ctx, target)
-                            Spacer(Modifier.height(UnderstoryTheme.spacing.xs))
-                            SecureOutlinedButton(
-                                onClick = { SettingsDeepLinks.open(ctx, target) },
-                                enabled = canOpen,
-                            ) {
-                                Text(stringResource(R.string.av_fix_in_settings))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun verdictAccent(v: ApkAnalyzer.Verdict): Color = when (v) {
-    ApkAnalyzer.Verdict.CLEAN -> UnderstoryTheme.semantic.success
-    ApkAnalyzer.Verdict.SUSPICIOUS -> UnderstoryTheme.semantic.warning
-    ApkAnalyzer.Verdict.KNOWN_BAD -> MaterialTheme.colorScheme.error
-    ApkAnalyzer.Verdict.UNKNOWN -> UnderstoryTheme.semantic.dim
 }
 
 /**

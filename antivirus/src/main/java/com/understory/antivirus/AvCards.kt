@@ -1,21 +1,37 @@
 package com.understory.antivirus
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Dangerous
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.ReportProblem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import com.understory.security.SecureOutlinedButton
 import com.understory.security.ui.components.SuiteCard
 import com.understory.security.ui.components.SwitchRow
@@ -37,6 +53,274 @@ internal fun severityAccent(s: RiskRules.Severity): Color = when (s) {
     RiskRules.Severity.HIGH -> UnderstoryTheme.semantic.warning
     RiskRules.Severity.MED -> UnderstoryTheme.semantic.warning
     RiskRules.Severity.LOW -> UnderstoryTheme.semantic.dim
+}
+
+/**
+ * A compact, inline error card sized to its content — safe to place inside a
+ * scrolling column (unlike the shared full-screen [com.understory.security.ui.components.ErrorState],
+ * which fills its parent and would clash with a verticalScroll constraint). An
+ * optional Retry uses the tap-jacking-hardened [SecureOutlinedButton].
+ */
+@Composable
+internal fun InlineErrorCard(message: String, onRetry: (() -> Unit)? = null) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(UnderstoryTheme.spacing.lg),
+            verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.sm),
+        ) {
+            Text(message, style = MaterialTheme.typography.bodyMedium)
+            if (onRetry != null) {
+                SecureOutlinedButton(onClick = onRetry) {
+                    Text(stringResource(R.string.av_scan_hero_action))
+                }
+            }
+        }
+    }
+}
+
+/** Human, localized severity name for the finding-card badge. */
+@Composable
+internal fun severityLabel(s: RiskRules.Severity): String = when (s) {
+    RiskRules.Severity.CRITICAL -> stringResource(R.string.av_sev_critical)
+    RiskRules.Severity.HIGH -> stringResource(R.string.av_sev_high)
+    RiskRules.Severity.MED -> stringResource(R.string.av_sev_medium)
+    RiskRules.Severity.LOW -> stringResource(R.string.av_sev_low)
+}
+
+/** Icon that reads the finding severity at a glance. */
+internal fun severityIcon(s: RiskRules.Severity): ImageVector = when (s) {
+    RiskRules.Severity.CRITICAL -> Icons.Filled.Dangerous
+    RiskRules.Severity.HIGH -> Icons.Filled.ReportProblem
+    RiskRules.Severity.MED -> Icons.Filled.ErrorOutline
+    RiskRules.Severity.LOW -> Icons.Filled.Info
+}
+
+/** Localized verdict name. */
+@Composable
+internal fun verdictLabel(v: ApkAnalyzer.Verdict): String = when (v) {
+    ApkAnalyzer.Verdict.CLEAN -> stringResource(R.string.av_verdict_clean)
+    ApkAnalyzer.Verdict.SUSPICIOUS -> stringResource(R.string.av_verdict_suspicious)
+    ApkAnalyzer.Verdict.KNOWN_BAD -> stringResource(R.string.av_verdict_known_bad)
+    ApkAnalyzer.Verdict.UNKNOWN -> stringResource(R.string.av_verdict_unknown)
+}
+
+@Composable
+internal fun verdictAccent(v: ApkAnalyzer.Verdict): Color = when (v) {
+    ApkAnalyzer.Verdict.CLEAN -> UnderstoryTheme.semantic.success
+    ApkAnalyzer.Verdict.SUSPICIOUS -> UnderstoryTheme.semantic.warning
+    ApkAnalyzer.Verdict.KNOWN_BAD -> MaterialTheme.colorScheme.error
+    ApkAnalyzer.Verdict.UNKNOWN -> UnderstoryTheme.semantic.dim
+}
+
+internal fun verdictIcon(v: ApkAnalyzer.Verdict): ImageVector = when (v) {
+    ApkAnalyzer.Verdict.CLEAN -> Icons.Filled.Info
+    ApkAnalyzer.Verdict.SUSPICIOUS -> Icons.Filled.ReportProblem
+    ApkAnalyzer.Verdict.KNOWN_BAD -> Icons.Filled.Block
+    ApkAnalyzer.Verdict.UNKNOWN -> Icons.Filled.ErrorOutline
+}
+
+/**
+ * A round severity chip: a tinted disc with the severity icon, used as the
+ * leading element of a finding card so the row's risk level is legible before
+ * any text is read.
+ */
+@Composable
+internal fun SeverityBadge(severity: RiskRules.Severity, modifier: Modifier = Modifier) {
+    val accent = severityAccent(severity)
+    Box(
+        modifier = modifier
+            .size(40.dp)
+            .background(accent.copy(alpha = 0.16f), CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = severityIcon(severity),
+            contentDescription = stringResource(R.string.cd_severity) + ": " + severityLabel(severity),
+            tint = accent,
+            modifier = Modifier.size(22.dp),
+        )
+    }
+}
+
+/**
+ * A single finding rendered as a card: leading severity badge, title, the
+ * localized severity name, the plain-English explanation, and (for
+ * enabled-abuser findings) a "Fix in Settings" deep-link. Findings arrive
+ * CRITICAL-first, so a column of these reads worst-first.
+ */
+@Composable
+internal fun FindingCard(finding: RiskRules.Finding) {
+    val ctx = LocalContext.current
+    val accent = severityAccent(finding.severity)
+    SuiteCard {
+        Row(verticalAlignment = Alignment.Top) {
+            SeverityBadge(finding.severity)
+            Spacer(Modifier.width(UnderstoryTheme.spacing.md))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    finding.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    severityLabel(finding.severity),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = accent,
+                )
+                Spacer(Modifier.height(UnderstoryTheme.spacing.xs))
+                Text(
+                    finding.explain,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                finding.deepLink?.let { target ->
+                    val canOpen = SettingsDeepLinks.canOpen(ctx, target)
+                    Spacer(Modifier.height(UnderstoryTheme.spacing.sm))
+                    SecureOutlinedButton(
+                        onClick = { SettingsDeepLinks.open(ctx, target) },
+                        enabled = canOpen,
+                    ) {
+                        Text(stringResource(R.string.av_fix_in_settings))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The verdict header card for a scan/audit report: package name, a verdict
+ * chip (icon + localized verdict, severity-tinted), version, and the evidence
+ * hashes. THREAT-MODEL: these are the APK's own public digests (never a stored
+ * secret), shown truncated as scan evidence — unchanged from wave-2/3.
+ */
+@Composable
+internal fun ReportHeaderCard(r: ApkAnalyzer.Report) {
+    val accent = verdictAccent(r.verdict)
+    SuiteCard {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    r.packageName,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    stringResource(R.string.av_report_version, r.versionName ?: "?", r.versionCode),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(UnderstoryTheme.spacing.sm))
+            VerdictChip(r.verdict)
+        }
+        Spacer(Modifier.height(UnderstoryTheme.spacing.sm))
+        val apkSha = r.apkSha256
+        Text(
+            if (apkSha != null) stringResource(R.string.av_report_apk_sha, apkSha.take(16))
+            else stringResource(R.string.av_apk_not_hashed),
+            style = MaterialTheme.typography.bodySmall,
+            color = UnderstoryTheme.semantic.dim,
+        )
+        r.certSha256?.let {
+            Text(
+                stringResource(R.string.av_report_cert_sha, it.take(16)),
+                style = MaterialTheme.typography.bodySmall,
+                color = UnderstoryTheme.semantic.dim,
+            )
+        }
+        r.notes.forEach { note ->
+            Spacer(Modifier.height(UnderstoryTheme.spacing.xs))
+            Text(
+                note,
+                style = MaterialTheme.typography.bodyMedium,
+                color = UnderstoryTheme.semantic.warning,
+            )
+        }
+    }
+}
+
+/** Verdict pill: severity-tinted icon + localized verdict text. */
+@Composable
+internal fun VerdictChip(verdict: ApkAnalyzer.Verdict) {
+    val accent = verdictAccent(verdict)
+    Surface(
+        color = accent.copy(alpha = 0.16f),
+        contentColor = accent,
+        shape = MaterialTheme.shapes.small,
+    ) {
+        Row(
+            modifier = Modifier.padding(
+                horizontal = UnderstoryTheme.spacing.sm,
+                vertical = UnderstoryTheme.spacing.xs,
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = verdictIcon(verdict),
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(UnderstoryTheme.spacing.xs))
+            Text(
+                verdictLabel(verdict),
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+    }
+}
+
+/**
+ * A tappable row for the audit list: leading severity badge (from the top
+ * finding, or the verdict when there is none), package name, the top finding's
+ * title as supporting text, a verdict chip, and a trailing chevron. The whole
+ * card is [SuiteCard]'s secure-clickable surface.
+ */
+@Composable
+internal fun AuditRowCard(r: ApkAnalyzer.Report, onClick: () -> Unit) {
+    SuiteCard(onClick = onClick) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val top = r.findings.firstOrNull()
+            if (top != null) {
+                SeverityBadge(top.severity)
+                Spacer(Modifier.width(UnderstoryTheme.spacing.md))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    r.packageName,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                top?.let { f ->
+                    Text(
+                        f.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = severityAccent(f.severity),
+                    )
+                }
+            }
+            Spacer(Modifier.width(UnderstoryTheme.spacing.sm))
+            VerdictChip(r.verdict)
+            Icon(
+                imageVector = Icons.Filled.ChevronRight,
+                contentDescription = stringResource(R.string.av_audit_details),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 }
 
 /** Top-of-home positioning banner (§0). */
