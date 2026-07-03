@@ -32,6 +32,21 @@
     <!-- Play Protect card (§3) -->
     <string name="av_pp_open">Open Play Protect</string>
     <string name="av_pp_unreachable">Play Protect settings not reachable on this device</string>
+    <string name="av_pp_on">Play Protect: on</string>
+    <string name="av_pp_off">Play Protect: off</string>
+    <string name="av_pp_na">Play Protect: not applicable</string>
+    <string name="av_pp_unknown">Play Protect: unknown</string>
+
+    <!-- Definitions loading placeholder -->
+    <string name="av_defs_loading">Definitions: loading…</string>
+
+    <!-- Fresh-install banner (§5.1 freshness-while-open) -->
+    <string name="av_fresh_install">Just installed / updated: %1$s — %2$s. Checked while APK Check is open (not background real-time).</string>
+    <string name="av_finding_line">%1$s: %2$s</string>
+
+    <!-- Startup crash fallback -->
+    <string name="av_crash_title">APK Check crash</string>
+    <string name="av_crash_reason">Something went wrong starting the app.</string>
 
     <!-- Tamper card / block screen (§6/§7) -->
     <string name="av_tamper_title">Device tooling detected</string>

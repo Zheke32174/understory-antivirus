@@ -137,8 +137,8 @@ class MainActivity : ComponentActivity() {
             setContent {
                 UnderstoryTheme(accent = UnderstoryAccent.ANTIVIRUS) {
                     FatalScreen(
-                        title = "APK Check crash",
-                        reason = "Something went wrong starting the app.",
+                        title = getString(R.string.av_crash_title),
+                        reason = getString(R.string.av_crash_reason),
                         details = t.toString(),
                     )
                 }
@@ -337,14 +337,13 @@ private fun InitialScreen(
         freshInstall?.let { report ->
             SuiteCard {
                 Text(
-                    "Just installed / updated: ${report.packageName} — ${report.verdict.name}. " +
-                        "Checked while APK Check is open (not background real-time).",
+                    stringResource(R.string.av_fresh_install, report.packageName, report.verdict.name),
                     style = MaterialTheme.typography.bodyMedium,
                     color = verdictAccent(report.verdict),
                 )
                 report.findings.firstOrNull()?.let { f ->
                     Text(
-                        "${f.severity.name}: ${f.title}",
+                        stringResource(R.string.av_finding_line, f.severity.name, f.title),
                         style = MaterialTheme.typography.bodyMedium,
                         color = severityAccent(f.severity),
                     )
@@ -603,7 +602,7 @@ private fun AuditRow(r: ApkAnalyzer.Report, onClick: () -> Unit) {
                 )
                 r.findings.firstOrNull()?.let { f ->
                     Text(
-                        "${f.severity.name}: ${f.title}",
+                        stringResource(R.string.av_finding_line, f.severity.name, f.title),
                         style = MaterialTheme.typography.bodyMedium,
                         color = severityAccent(f.severity),
                     )
@@ -682,7 +681,7 @@ private fun ReportView(r: ApkAnalyzer.Report) {
                 ) {
                     Column(Modifier.padding(UnderstoryTheme.spacing.sm)) {
                         Text(
-                            "${f.severity.name}: ${f.title}",
+                            stringResource(R.string.av_finding_line, f.severity.name, f.title),
                             style = MaterialTheme.typography.bodyMedium,
                             color = severityAccent(f.severity),
                             fontWeight = FontWeight.Medium,

@@ -67,10 +67,10 @@ internal fun PlayProtectCard(status: PlayProtectStatus.Status) {
         PlayProtectStatus.State.UNKNOWN -> UnderstoryTheme.semantic.warning
     }
     val label = when (status.state) {
-        PlayProtectStatus.State.ENABLED -> "Play Protect: on"
-        PlayProtectStatus.State.DISABLED -> "Play Protect: off"
-        PlayProtectStatus.State.NOT_APPLICABLE -> "Play Protect: not applicable"
-        PlayProtectStatus.State.UNKNOWN -> "Play Protect: unknown"
+        PlayProtectStatus.State.ENABLED -> stringResource(R.string.av_pp_on)
+        PlayProtectStatus.State.DISABLED -> stringResource(R.string.av_pp_off)
+        PlayProtectStatus.State.NOT_APPLICABLE -> stringResource(R.string.av_pp_na)
+        PlayProtectStatus.State.UNKNOWN -> stringResource(R.string.av_pp_unknown)
     }
     // Offer the deep-link on every state except NOT_APPLICABLE (no GMS present).
     val showOpen = status.state != PlayProtectStatus.State.NOT_APPLICABLE
@@ -110,7 +110,7 @@ internal fun DefinitionsCard(
 ) {
     SuiteCard {
         val line = when {
-            meta == null -> "Definitions: loading…"
+            meta == null -> stringResource(R.string.av_defs_loading)
             meta.isSeed -> stringResource(R.string.av_defs_seed, meta.serial)
             else -> stringResource(R.string.av_defs_imported, meta.serial, meta.issued)
         }

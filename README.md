@@ -1,6 +1,6 @@
 # understory-antivirus
 
-Heuristic APK / install scanner: signature checks against known-bad lists, risk rules, Play Protect status surfacing. Userspace-honest: heuristic, not behavioral.
+**Understory APK Check** — an offline, on-demand APK auditor that complements Google Play Protect (it does not replace it). It inspects sideloaded APKs and reviews what your installed apps *can* do: a signed offline deny-list (Lucky-Patcher-family and known repackager signing certs, extensible via a signed import file), permission-shape heuristics, hidden-launcher detection, and enumeration of declared and currently-enabled accessibility / device-admin / notification-listener abusers. Userspace-honest: structural, not behavioral — no real-time process/memory scanning (rootless-impossible), no network, no malware database. An optional opt-in periodic re-check (default off) diffs installed apps every ~6h; findings are advisory, not verdicts.
 
 Status: **alpha** (functional; working the release-blockers list in understory-common).
 
