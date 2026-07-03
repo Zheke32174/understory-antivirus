@@ -1,13 +1,6 @@
 package com.understory.antivirus
 
-import android.Manifest
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.Context
-import android.content.pm.PackageManager
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.understory.security.Diagnostics
@@ -69,7 +62,7 @@ class PeriodicScanWorker(
         saveSnapshot(current)
 
         if (flagged.isNotEmpty() && PeriodicScan.alertsAllowed(applicationContext)) {
-            notify(flagged)
+            ScanNotifier.postPeriodic(applicationContext, flagged)
         }
         Diagnostics.log("antivirus.PeriodicScan", "diff done: ${flagged.size} notable of ${current.size} pkgs")
         return Result.success()
@@ -112,51 +105,4 @@ class PeriodicScanWorker(
         }
     }
 
-    private fun notify(flagged: List<ApkAnalyzer.Report>) {
-        // Guard the runtime permission — if it's not granted, the periodic
-        // scan still ran and results are visible in-app on next open; we just
-        // don't post. No crash, no dead control.
-        if (ContextCompat.checkSelfPermission(applicationContext, Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED
-        ) return
-
-        ensureChannel()
-        val top = flagged.first()
-        val title = applicationContext.getString(R.string.av_notif_title)
-        val text = if (flagged.size == 1) {
-            applicationContext.getString(R.string.av_notif_one, top.packageName)
-        } else {
-            applicationContext.getString(R.string.av_notif_many, flagged.size)
-        }
-        val intent = android.content.Intent(applicationContext, MainActivity::class.java)
-            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        val pi = android.app.PendingIntent.getActivity(
-            applicationContext, 0, intent,
-            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val notif = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_warning)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setContentIntent(pi)
-            .setAutoCancel(true)
-            .build()
-        runCatching { NotificationManagerCompat.from(applicationContext).notify(NOTIF_ID, notif) }
-    }
-
-    private fun ensureChannel() {
-        val mgr = applicationContext.getSystemService(NotificationManager::class.java) ?: return
-        if (mgr.getNotificationChannel(CHANNEL_ID) != null) return
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            applicationContext.getString(R.string.av_notif_channel),
-            NotificationManager.IMPORTANCE_DEFAULT,
-        )
-        mgr.createNotificationChannel(channel)
-    }
-
-    companion object {
-        const val CHANNEL_ID = "av-periodic-scan"
-        private const val NOTIF_ID = 1001
-    }
 }

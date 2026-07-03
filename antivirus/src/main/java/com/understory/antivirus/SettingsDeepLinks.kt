@@ -3,6 +3,7 @@ package com.understory.antivirus
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.provider.Settings
 import com.understory.security.Diagnostics
 
@@ -54,6 +55,49 @@ object SettingsDeepLinks {
     /** Open Play Protect, falling back to security settings. */
     fun openPlayProtect(ctx: Context): Boolean =
         launchFirst(ctx, listOf(PLAY_PROTECT_ACTION, Settings.ACTION_SECURITY_SETTINGS))
+
+    /**
+     * Open the system App-Info screen for [pkg] (permissions, storage, the
+     * "Uninstall" and "Force stop" controls live here). This is the honest
+     * "take action on this app" destination for the detail screen: we don't
+     * uninstall or revoke on the user's behalf — we take them to the exact OS
+     * screen where they decide. Falls back to the all-apps settings list.
+     */
+    fun openAppDetails(ctx: Context, pkg: String): Boolean {
+        val details = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            .setData(Uri.fromParts("package", pkg, null))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            ctx.startActivity(details)
+            true
+        } catch (_: Throwable) {
+            launchFirst(ctx, listOf(Settings.ACTION_APPLICATION_SETTINGS))
+        }
+    }
+
+    /**
+     * Launch the system uninstall confirmation for [pkg]. Uses the public
+     * ACTION_DELETE Intent — the OS shows its own confirm dialog; we never
+     * remove an app silently (and hold no delete permission). Returns false if
+     * nothing handled it, so the caller can fall back to [openAppDetails].
+     */
+    fun requestUninstall(ctx: Context, pkg: String): Boolean {
+        val intent = Intent(Intent.ACTION_DELETE)
+            .setData(Uri.fromParts("package", pkg, null))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            ctx.startActivity(intent)
+            true
+        } catch (_: Throwable) {
+            openAppDetails(ctx, pkg)
+        }
+    }
+
+    fun canOpenAppDetails(ctx: Context, pkg: String): Boolean = runCatching {
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            .setData(Uri.fromParts("package", pkg, null))
+            .resolveActivity(ctx.packageManager) != null
+    }.getOrDefault(false)
 
     private fun launchFirst(ctx: Context, actions: List<String>): Boolean {
         for (action in actions) {

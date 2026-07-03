@@ -124,6 +124,16 @@ internal object RawApkParser {
             flags = flags,
             servicePermissions = manifest?.servicePermissions ?: emptyList(),
             receiverPermissions = manifest?.receiverPermissions ?: emptyList(),
+            debuggable = manifest?.debuggable ?: false,
+            // allowBackup defaults TRUE only when a manifest actually parsed;
+            // a null manifest means "unknown", and the analyzer never runs the
+            // allowBackup rule on an unparsed manifest.
+            allowBackup = manifest?.allowBackup ?: true,
+            usesCleartextTraffic = manifest?.usesCleartextTraffic ?: false,
+            testOnly = manifest?.testOnly ?: false,
+            minSdk = manifest?.minSdk ?: ApkParseResult.SDK_UNKNOWN,
+            targetSdk = manifest?.targetSdk ?: ApkParseResult.SDK_UNKNOWN,
+            exportedUnprotectedComponents = manifest?.exportedUnprotectedComponents ?: 0,
         )
     }
 
@@ -245,6 +255,13 @@ internal object RawApkParser {
         val servicePermissions: List<String>,
         /** `android:permission` of each `<receiver>` element. */
         val receiverPermissions: List<String>,
+        val debuggable: Boolean,
+        val allowBackup: Boolean,
+        val usesCleartextTraffic: Boolean,
+        val testOnly: Boolean,
+        val minSdk: Int,
+        val targetSdk: Int,
+        val exportedUnprotectedComponents: Int,
     )
 
     private const val CHUNK_STRING_POOL = 0x0001
@@ -257,10 +274,19 @@ internal object RawApkParser {
     // attribute-name strings were stripped by obfuscators.
     private const val RES_ID_NAME = 0x01010003
     private const val RES_ID_PERMISSION = 0x01010006
+    private const val RES_ID_DEBUGGABLE = 0x0101000f
+    private const val RES_ID_MIN_SDK = 0x0101020c
+    private const val RES_ID_ALLOW_BACKUP = 0x01010280
     private const val RES_ID_VERSION_CODE = 0x0101021b
     private const val RES_ID_VERSION_NAME = 0x0101021c
+    private const val RES_ID_TARGET_SDK = 0x01010270
+    private const val RES_ID_TEST_ONLY = 0x01010272
+    private const val RES_ID_EXPORTED = 0x01010010
+    private const val RES_ID_USES_CLEARTEXT = 0x01010628
 
     private const val TYPE_STRING = 0x03
+    private const val TYPE_INT_BOOLEAN = 0x12
+    private const val TYPE_INT_DEC = 0x10
 
     /** Defensive cap on collected component-permission strings. */
     private const val MAX_COMPONENT_PERMS = 256
@@ -276,6 +302,13 @@ internal object RawApkParser {
         val permissions = mutableListOf<String>()
         val servicePermissions = mutableListOf<String>()
         val receiverPermissions = mutableListOf<String>()
+        var debuggable = false
+        var allowBackup = true // Android's default when the attr is absent.
+        var usesCleartextTraffic = false
+        var testOnly = false
+        var minSdk = ApkParseResult.SDK_UNKNOWN
+        var targetSdk = ApkParseResult.SDK_UNKNOWN
+        var exportedUnprotected = 0
 
         while (pos + 8 <= m.size) {
             val chunkType = u16(m, pos)
@@ -304,8 +337,23 @@ internal object RawApkParser {
                         elemName == "uses-permission-sdk-23"
                     val isService = elemName == "service"
                     val isReceiver = elemName == "receiver"
-                    if (isManifest || isPermission || isService || isReceiver) {
+                    val isApplication = elemName == "application"
+                    val isUsesSdk = elemName == "uses-sdk"
+                    // Any IPC-reachable component: exported+no-permission is an
+                    // attack surface regardless of the component kind.
+                    val isComponent = isService || isReceiver ||
+                        elemName == "activity" || elemName == "activity-alias" ||
+                        elemName == "provider"
+                    if (isManifest || isPermission || isService || isReceiver ||
+                        isApplication || isUsesSdk || isComponent
+                    ) {
                         require(attrSize >= 20) { "bad attribute size" }
+                        // Per-element accumulators for the exported+permission
+                        // pairing (a component is only a finding when it is
+                        // exported AND unprotected — both attrs live on the
+                        // same element, so we read them together).
+                        var elemExported: Boolean? = null
+                        var elemHasPermission = false
                         for (i in 0 until attrCount) {
                             val a = ext + attrStart + i * attrSize
                             require(a + 20 <= pos + chunkSize) { "attr out of chunk" }
@@ -319,6 +367,13 @@ internal object RawApkParser {
                                 rawValueIdx != -1 -> strings.getOrNull(rawValueIdx)
                                 dataType == TYPE_STRING -> strings.getOrNull(data)
                                 else -> null
+                            }
+                            // A boolean attr is a non-zero TYPE_INT_BOOLEAN (or a
+                            // "true" string on rare unresolved manifests).
+                            val boolValue = when {
+                                dataType == TYPE_INT_BOOLEAN -> data != 0
+                                rawValueIdx != -1 -> stringValue.equals("true", ignoreCase = true)
+                                else -> data != 0
                             }
                             when {
                                 isManifest && attrName == "package" ->
@@ -342,6 +397,51 @@ internal object RawApkParser {
                                         }
                                     }
                             }
+                            // Application-level posture flags.
+                            if (isApplication) {
+                                when {
+                                    resId == RES_ID_DEBUGGABLE || attrName == "debuggable" ->
+                                        debuggable = boolValue
+                                    resId == RES_ID_ALLOW_BACKUP || attrName == "allowBackup" ->
+                                        allowBackup = boolValue
+                                    resId == RES_ID_USES_CLEARTEXT || attrName == "usesCleartextTraffic" ->
+                                        usesCleartextTraffic = boolValue
+                                    resId == RES_ID_TEST_ONLY || attrName == "testOnly" ->
+                                        testOnly = boolValue
+                                }
+                            }
+                            if (isUsesSdk) {
+                                // uses-sdk levels are typed ints (0x10..0x1f) in
+                                // a compiled manifest; fall back to a string value
+                                // on the rare unresolved manifest.
+                                val sdkInt = if (dataType in TYPE_INT_DEC..0x1f) data
+                                else stringValue?.toIntOrNull() ?: ApkParseResult.SDK_UNKNOWN
+                                when {
+                                    resId == RES_ID_MIN_SDK || attrName == "minSdkVersion" ->
+                                        if (sdkInt >= 0) minSdk = sdkInt
+                                    resId == RES_ID_TARGET_SDK || attrName == "targetSdkVersion" ->
+                                        if (sdkInt >= 0) targetSdk = sdkInt
+                                }
+                            }
+                            if (isComponent) {
+                                when {
+                                    resId == RES_ID_EXPORTED || attrName == "exported" ->
+                                        elemExported = boolValue
+                                    resId == RES_ID_PERMISSION || attrName == "permission" ->
+                                        if (!stringValue.isNullOrEmpty()) elemHasPermission = true
+                                }
+                            }
+                        }
+                        // Count only components EXPLICITLY exported="true" with no
+                        // permission guard. We do NOT infer the intent-filter
+                        // default-exported case — the binary manifest doesn't
+                        // resolve that cheaply, and inferring it would over-flag
+                        // ordinary launcher activities. Explicit is the honest,
+                        // low-false-positive signal here.
+                        if (isComponent && elemExported == true && !elemHasPermission &&
+                            exportedUnprotected < MAX_COMPONENT_PERMS
+                        ) {
+                            exportedUnprotected++
                         }
                     }
                 }
@@ -355,6 +455,13 @@ internal object RawApkParser {
             permissions = permissions,
             servicePermissions = servicePermissions,
             receiverPermissions = receiverPermissions,
+            debuggable = debuggable,
+            allowBackup = allowBackup,
+            usesCleartextTraffic = usesCleartextTraffic,
+            testOnly = testOnly,
+            minSdk = minSdk,
+            targetSdk = targetSdk,
+            exportedUnprotectedComponents = exportedUnprotected,
         )
     }
 

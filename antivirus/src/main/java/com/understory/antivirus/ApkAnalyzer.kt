@@ -8,6 +8,8 @@ import android.net.Uri
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
 
 /**
  * Static analysis for APKs and installed apps.
@@ -48,6 +50,31 @@ object ApkAnalyzer {
         val certSha256: String?,
         val findings: List<RiskRules.Finding>,
         val notes: List<String>,
+        /**
+         * Aggregate numeric risk + rating over [findings] (deny-list hits pin to
+         * CRITICAL). Present on every real report; the crash/timeout/unparseable
+         * sentinels carry an empty-finding [RiskRules.score] of LOW/0.
+         */
+        val risk: RiskRules.RiskScore = RiskRules.score(emptyList()),
+        /**
+         * Where the app was installed from, for the detail screen. null on the
+         * SAF-scanned-APK path (a raw file has no install source) and on the
+         * sentinel reports.
+         */
+        val installSource: InstallSource? = null,
+        /** The app's declared permissions, for the grouped permission list. */
+        val permissions: List<String> = emptyList(),
+    )
+
+    /**
+     * The recorded origin of an installed app: the installer package (e.g.
+     * `com.android.vending`), a coarse [trust] classification, and a
+     * human-readable [label] for the detail screen.
+     */
+    data class InstallSource(
+        val installerPackage: String?,
+        val trust: RiskRules.InstallerTrust,
+        val label: String,
     )
 
     /**
@@ -101,7 +128,9 @@ object ApkAnalyzer {
                 PackageManager.GET_PERMISSIONS or
                     PackageManager.GET_SIGNING_CERTIFICATES or
                     PackageManager.GET_SERVICES or
-                    PackageManager.GET_RECEIVERS,
+                    PackageManager.GET_RECEIVERS or
+                    PackageManager.GET_ACTIVITIES or
+                    PackageManager.GET_PROVIDERS,
             )
         } catch (_: PackageManager.NameNotFoundException) {
             return null
@@ -120,7 +149,38 @@ object ApkAnalyzer {
      * @param onProgress invoked per package scanned (done, total) so the UI can
      *   render a determinate progress bar. Runs on the calling thread.
      */
-    fun auditInstalled(ctx: Context, onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }): List<Report> {
+    fun auditInstalled(ctx: Context, onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }): List<Report> =
+        auditInstalledWithSummary(ctx, onProgress).flagged
+
+    /**
+     * The outcome of a whole-device sweep: the ranked [flagged] reports plus a
+     * [summary] the UI shows above the list ("N of M user apps flagged", with a
+     * per-rating breakdown). [scanned] is every candidate audited (not just the
+     * flagged ones), so "0 flagged of 128 scanned" reads honestly.
+     */
+    data class AuditResult(val flagged: List<Report>, val summary: AuditSummary)
+
+    /**
+     * Whole-sweep summary. [rulesFired] is the total finding count across every
+     * flagged app; the per-rating map counts flagged apps by their aggregate
+     * [RiskRules.Rating] so the header can say e.g. "2 Critical, 3 High".
+     */
+    data class AuditSummary(
+        val scanned: Int,
+        val flagged: Int,
+        val knownBad: Int,
+        val byRating: Map<RiskRules.Rating, Int>,
+    )
+
+    /**
+     * Walk every PackageManager-visible user/updated-system app, audit each, and
+     * return the ranked flagged reports plus a device-wide [AuditSummary]. Off
+     * the main thread; [onProgress] drives the determinate bar.
+     */
+    fun auditInstalledWithSummary(
+        ctx: Context,
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+    ): AuditResult {
         BlocklistStore.ensureLoaded(ctx)
         val enabled = EnabledAbusers.snapshot(ctx)
         val pm = ctx.packageManager
@@ -142,7 +202,14 @@ object ApkAnalyzer {
             }
             onProgress(i + 1, total)
         }
-        return rankReports(reports)
+        val ranked = rankReports(reports)
+        val summary = AuditSummary(
+            scanned = total,
+            flagged = ranked.size,
+            knownBad = ranked.count { it.verdict == Verdict.KNOWN_BAD },
+            byRating = ranked.groupingBy { it.risk.rating }.eachCount(),
+        )
+        return AuditResult(ranked, summary)
     }
 
     /**
@@ -214,15 +281,8 @@ object ApkAnalyzer {
                 notes = listOf("Couldn't parse the APK; likely corrupt or malformed."),
             )
         }
-        val permSet = parsed.permissions.toSet()
-        val findings = (
-            RiskRules.analyze(permSet) +
-                RiskRules.analyzeComponents(
-                    parsed.servicePermissions,
-                    parsed.receiverPermissions,
-                    permSet,
-                )
-            ).sortedBy { it.severity.ordinal }
+        val facts = ApkFactsBuilder.fromParsed(parsed)
+        val findings = facts.findings()
         val notes = mutableListOf<String>()
         val dupManifest = ApkParseResult.FLAG_DUPLICATE_MANIFEST in parsed.flags
         if (dupManifest) {
@@ -257,6 +317,9 @@ object ApkAnalyzer {
             certSha256 = parsed.certSha256s.firstOrNull(),
             findings = findings,
             notes = notes,
+            risk = RiskRules.score(findings, knownBad = verdict == Verdict.KNOWN_BAD),
+            installSource = null, // a SAF-scanned raw file has no install source
+            permissions = parsed.permissions,
         )
     }
 
@@ -272,22 +335,46 @@ object ApkAnalyzer {
     ): Report {
         val perms = info.requestedPermissions?.toSet() ?: emptySet()
         val pkg = info.packageName
+        val applicationInfo = info.applicationInfo
 
         // Declared-component abuse (a11y / device-admin / notif-listener) —
         // read off the components, the CORRECT input.
         val servicePerms = info.services?.mapNotNull { it.permission } ?: emptyList()
         val receiverPerms = info.receivers?.mapNotNull { it.permission } ?: emptyList()
 
+        // Structural posture from the metadata the system already parsed at
+        // install time (no untrusted bytes on this path). Install source and
+        // signing posture come from PackageManager, which the SAF-scanned path
+        // can't see.
+        val installSource = installSourceOf(ctx, pkg)
+        val exportedUnprotected = exportedUnprotectedCount(info)
+        val structural = if (applicationInfo != null) {
+            RiskRules.analyzeStructural(
+                debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0,
+                allowBackup = (applicationInfo.flags and ApplicationInfo.FLAG_ALLOW_BACKUP) != 0,
+                usesCleartextTraffic =
+                    (applicationInfo.flags and ApplicationInfo.FLAG_USES_CLEARTEXT_TRAFFIC) != 0,
+                testOnly = (applicationInfo.flags and ApplicationInfo.FLAG_TEST_ONLY) != 0,
+                minSdk = applicationInfo.minSdkVersion,
+                targetSdk = applicationInfo.targetSdkVersion,
+                exportedUnprotectedComponents = exportedUnprotected,
+                installer = installSource.trust,
+                signing = signingPostureOf(info),
+            )
+        } else {
+            emptyList()
+        }
+
         val findings = (
             RiskRules.analyze(perms) +
                 RiskRules.analyzeComponents(servicePerms, receiverPerms, perms) +
+                structural +
                 enabledAbuserFindings(pkg, enabled)
             ).toMutableList()
 
         // Hidden-launcher detection (stalkerware-style): user-installed apps
         // with no launcher entry are invisible from the app drawer.
         run {
-            val applicationInfo = info.applicationInfo
             if (pkg != null && applicationInfo != null) {
                 val isSystem = (applicationInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
                 val isUpdatedSystem = (applicationInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
@@ -351,6 +438,9 @@ object ApkAnalyzer {
             certSha256 = certSha,
             findings = findings,
             notes = notes,
+            risk = RiskRules.score(findings, knownBad = verdict == Verdict.KNOWN_BAD),
+            installSource = installSource,
+            permissions = perms.toList().sorted(),
         )
     }
 
@@ -421,6 +511,104 @@ object ApkAnalyzer {
         }
         md.digest().joinToString("") { "%02x".format(it) }
     }.getOrNull()
+
+    /**
+     * Package names we treat as trusted app-store installers. The exhaustive
+     * list is impossible (every OEM store), so this is a small allowlist of the
+     * common ones; anything NOT here reads as SIDELOAD — the fail-toward-visible
+     * direction (we'd rather show a benign sideload note than silently trust an
+     * unknown installer).
+     */
+    private val TRUSTED_INSTALLERS = setOf(
+        "com.android.vending", // Google Play
+        "com.google.android.packageinstaller",
+        "com.google.android.feedback",
+        "com.amazon.venezia", // Amazon Appstore
+        "com.sec.android.app.samsungapps", // Galaxy Store
+        "com.samsung.android.mateagent",
+        "com.huawei.appmarket",
+        "com.xiaomi.market",
+        "com.oppo.market",
+        "com.heytap.market",
+        "com.vivo.appstore",
+        "com.aurora.store", // Aurora (Play proxy)
+        "org.fdroid.fdroid", // F-Droid
+        "com.aurora.adroid",
+    )
+
+    /**
+     * Resolve where [pkg] was installed from. Uses the modern
+     * [PackageManager.getInstallSourceInfo] API. A null / bare-package-installer
+     * / browser / adb source reads as SIDELOAD; a recognised store as TRUSTED;
+     * a failure to read (rare) as UNKNOWN (no invented signal).
+     */
+    private fun installSourceOf(ctx: Context, pkg: String?): InstallSource {
+        if (pkg == null) return InstallSource(null, RiskRules.InstallerTrust.UNKNOWN, "unknown")
+        return runCatching {
+            val src = ctx.packageManager.getInstallSourceInfo(pkg)
+            // installingPackageName is the app that actually performed the
+            // install (initiating/originating are spoofable hints); prefer it.
+            val installer = src.installingPackageName
+            when {
+                installer == null -> InstallSource(
+                    null, RiskRules.InstallerTrust.SIDELOAD, "no recorded installer (sideload / adb)",
+                )
+                installer in TRUSTED_INSTALLERS -> InstallSource(
+                    installer, RiskRules.InstallerTrust.TRUSTED, installer,
+                )
+                else -> InstallSource(
+                    installer, RiskRules.InstallerTrust.SIDELOAD, installer,
+                )
+            }
+        }.getOrElse {
+            InstallSource(null, RiskRules.InstallerTrust.UNKNOWN, "unknown")
+        }
+    }
+
+    /**
+     * Count exported-and-unprotected components from PackageManager metadata.
+     * A component is counted when it is [exported] with no `permission` guard.
+     * We only count components whose exported flag is explicitly reflected by
+     * PackageManager (which already resolved the intent-filter default), so this
+     * is the accurate installed-app analogue of the binary-manifest heuristic.
+     */
+    private fun exportedUnprotectedCount(info: PackageInfo): Int {
+        var n = 0
+        info.activities?.forEach { if (it.exported && it.permission == null) n++ }
+        info.services?.forEach { if (it.exported && it.permission == null) n++ }
+        info.receivers?.forEach { if (it.exported && it.permission == null) n++ }
+        info.providers?.forEach {
+            // Providers guard reads/writes separately; treat "no guard at all"
+            // as unprotected.
+            if (it.exported && it.permission == null && it.readPermission == null &&
+                it.writePermission == null
+            ) {
+                n++
+            }
+        }
+        return n
+    }
+
+    /**
+     * Signing posture from the already-parsed signing info: no signers →
+     * UNSIGNED; a single self-signed (subject == issuer) leaf → SELF_SIGNED;
+     * anything else → OK. Best-effort — a parse failure reads as OK (we don't
+     * fabricate a signing finding we couldn't verify).
+     */
+    private fun signingPostureOf(info: PackageInfo): RiskRules.SigningPosture {
+        val signers = info.signingInfo?.apkContentsSigners
+        if (signers.isNullOrEmpty()) return RiskRules.SigningPosture.UNSIGNED
+        if (signers.size > 1) return RiskRules.SigningPosture.OK
+        return runCatching {
+            val cf = CertificateFactory.getInstance("X.509")
+            val cert = cf.generateCertificate(signers[0].toByteArray().inputStream()) as X509Certificate
+            if (cert.subjectX500Principal == cert.issuerX500Principal) {
+                RiskRules.SigningPosture.SELF_SIGNED
+            } else {
+                RiskRules.SigningPosture.OK
+            }
+        }.getOrDefault(RiskRules.SigningPosture.OK)
+    }
 
     /**
      * SHA-256 of the first apkContentsSigners certificate. Matches the

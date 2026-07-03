@@ -40,6 +40,62 @@ class ApkParseResultParcelTest {
         }
     }
 
+    @Test fun v3StructuralFieldsRoundTrip() {
+        val original = ApkParseResult(
+            packageName = "com.example",
+            versionName = "1.2",
+            versionCode = 42,
+            certSha256s = listOf("aa"),
+            permissions = emptyList(),
+            flags = emptyList(),
+            servicePermissions = emptyList(),
+            receiverPermissions = emptyList(),
+            debuggable = true,
+            allowBackup = false,
+            usesCleartextTraffic = true,
+            testOnly = true,
+            minSdk = 19,
+            targetSdk = 21,
+            exportedUnprotectedComponents = 4,
+        )
+        val parcel = Parcel.obtain()
+        try {
+            original.writeToParcel(parcel, 0)
+            parcel.setDataPosition(0)
+            val restored = ApkParseResult.CREATOR.createFromParcel(parcel)
+            assertEquals(true, restored.debuggable)
+            assertEquals(false, restored.allowBackup)
+            assertEquals(true, restored.usesCleartextTraffic)
+            assertEquals(true, restored.testOnly)
+            assertEquals(19, restored.minSdk)
+            assertEquals(21, restored.targetSdk)
+            assertEquals(4, restored.exportedUnprotectedComponents)
+        } finally {
+            parcel.recycle()
+        }
+    }
+
+    @Test fun v3DefaultsRoundTrip() {
+        // The positional constructor the isolated service uses (6 args) must
+        // still parcel/unparcel with the v3 defaults intact.
+        val original = ApkParseResult(
+            "x", null, 0L, emptyList(), emptyList(), listOf(ApkParseResult.FLAG_BAD_ZIP),
+        )
+        val parcel = Parcel.obtain()
+        try {
+            original.writeToParcel(parcel, 0)
+            parcel.setDataPosition(0)
+            val restored = ApkParseResult.CREATOR.createFromParcel(parcel)
+            assertEquals(false, restored.debuggable)
+            assertEquals(true, restored.allowBackup)
+            assertEquals(ApkParseResult.SDK_UNKNOWN, restored.minSdk)
+            assertEquals(ApkParseResult.SDK_UNKNOWN, restored.targetSdk)
+            assertEquals(0, restored.exportedUnprotectedComponents)
+        } finally {
+            parcel.recycle()
+        }
+    }
+
     @Test fun defaultV2FieldsAreEmpty() {
         val original = ApkParseResult(
             packageName = "x",

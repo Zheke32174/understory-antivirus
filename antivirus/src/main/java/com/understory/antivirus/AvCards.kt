@@ -19,11 +19,15 @@ import androidx.compose.material.icons.filled.Dangerous
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.ReportProblem
+import androidx.compose.material.icons.filled.Launch
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -53,6 +57,22 @@ internal fun severityAccent(s: RiskRules.Severity): Color = when (s) {
     RiskRules.Severity.HIGH -> UnderstoryTheme.semantic.warning
     RiskRules.Severity.MED -> UnderstoryTheme.semantic.warning
     RiskRules.Severity.LOW -> UnderstoryTheme.semantic.dim
+}
+
+@Composable
+internal fun ratingAccent(r: RiskRules.Rating): Color = when (r) {
+    RiskRules.Rating.CRITICAL -> MaterialTheme.colorScheme.error
+    RiskRules.Rating.HIGH -> UnderstoryTheme.semantic.warning
+    RiskRules.Rating.MEDIUM -> UnderstoryTheme.semantic.warning
+    RiskRules.Rating.LOW -> UnderstoryTheme.semantic.success
+}
+
+@Composable
+internal fun ratingLabel(r: RiskRules.Rating): String = when (r) {
+    RiskRules.Rating.CRITICAL -> stringResource(R.string.av_rating_critical)
+    RiskRules.Rating.HIGH -> stringResource(R.string.av_rating_high)
+    RiskRules.Rating.MEDIUM -> stringResource(R.string.av_rating_medium)
+    RiskRules.Rating.LOW -> stringResource(R.string.av_rating_low)
 }
 
 /**
@@ -224,6 +244,8 @@ internal fun ReportHeaderCard(r: ApkAnalyzer.Report) {
             VerdictChip(r.verdict)
         }
         Spacer(Modifier.height(UnderstoryTheme.spacing.sm))
+        RiskScoreRow(r.risk)
+        Spacer(Modifier.height(UnderstoryTheme.spacing.sm))
         val apkSha = r.apkSha256
         Text(
             if (apkSha != null) stringResource(R.string.av_report_apk_sha, apkSha.take(16))
@@ -277,6 +299,57 @@ internal fun VerdictChip(verdict: ApkAnalyzer.Verdict) {
                 style = MaterialTheme.typography.labelLarge,
             )
         }
+    }
+}
+
+/**
+ * The aggregate risk-score row: a rating chip, the numeric score out of 100, a
+ * progress bar, and an HONEST caption. The score is a heuristic ranking dial,
+ * NOT a probability — the caption says so, keeping copy truthful (the vault /
+ * honest-copy invariant applies to security claims too).
+ */
+@Composable
+internal fun RiskScoreRow(risk: RiskRules.RiskScore) {
+    val accent = ratingAccent(risk.rating)
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                color = accent.copy(alpha = 0.16f),
+                contentColor = accent,
+                shape = MaterialTheme.shapes.small,
+            ) {
+                Text(
+                    stringResource(R.string.av_rating_chip, ratingLabel(risk.rating)),
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(
+                        horizontal = UnderstoryTheme.spacing.sm,
+                        vertical = UnderstoryTheme.spacing.xs,
+                    ),
+                )
+            }
+            Spacer(Modifier.width(UnderstoryTheme.spacing.sm))
+            Text(
+                stringResource(R.string.av_score_out_of, risk.score),
+                style = MaterialTheme.typography.titleMedium,
+                color = accent,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+        Spacer(Modifier.height(UnderstoryTheme.spacing.xs))
+        LinearProgressIndicator(
+            progress = { risk.score / 100f },
+            color = accent,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(UnderstoryTheme.spacing.xs))
+        Text(
+            stringResource(R.string.av_score_caption),
+            style = MaterialTheme.typography.bodySmall,
+            color = UnderstoryTheme.semantic.dim,
+        )
     }
 }
 
@@ -457,6 +530,180 @@ internal fun TamperCard(info: TamperFindings.TamperInfo) {
     }
 }
 
+/**
+ * Device-wide audit summary shown above the flagged list: "N of M scanned
+ * flagged" plus a per-rating breakdown. Honest denominator — [scanned] is every
+ * user app audited, not just the flagged ones.
+ */
+@Composable
+internal fun AuditSummaryCard(summary: ApkAnalyzer.AuditSummary) {
+    SuiteCard {
+        Text(
+            stringResource(R.string.av_audit_summary, summary.flagged, summary.scanned),
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Medium,
+        )
+        val order = listOf(
+            RiskRules.Rating.CRITICAL,
+            RiskRules.Rating.HIGH,
+            RiskRules.Rating.MEDIUM,
+            RiskRules.Rating.LOW,
+        )
+        val parts = order.mapNotNull { rating ->
+            summary.byRating[rating]?.takeIf { it > 0 }?.let { n -> ratingLabel(rating) to n }
+        }
+        if (parts.isNotEmpty()) {
+            Spacer(Modifier.height(UnderstoryTheme.spacing.xs))
+            Row(Modifier.fillMaxWidth()) {
+                parts.forEachIndexed { i, (label, n) ->
+                    if (i > 0) Spacer(Modifier.width(UnderstoryTheme.spacing.md))
+                    Text(
+                        "$n $label",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        if (summary.knownBad > 0) {
+            Spacer(Modifier.height(UnderstoryTheme.spacing.xs))
+            Text(
+                stringResource(R.string.av_audit_summary_known_bad, summary.knownBad),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+/** Install-source line for the detail screen (installed apps only). */
+@Composable
+internal fun InstallSourceCard(source: ApkAnalyzer.InstallSource) {
+    val accent = when (source.trust) {
+        RiskRules.InstallerTrust.TRUSTED -> UnderstoryTheme.semantic.success
+        RiskRules.InstallerTrust.SIDELOAD -> UnderstoryTheme.semantic.warning
+        RiskRules.InstallerTrust.UNKNOWN -> UnderstoryTheme.semantic.dim
+    }
+    SuiteCard {
+        Text(
+            stringResource(R.string.av_install_source_title),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Medium,
+        )
+        Spacer(Modifier.height(UnderstoryTheme.spacing.xs))
+        Text(
+            source.label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = accent,
+        )
+        val note = when (source.trust) {
+            RiskRules.InstallerTrust.TRUSTED -> stringResource(R.string.av_install_trusted)
+            RiskRules.InstallerTrust.SIDELOAD -> stringResource(R.string.av_install_sideload)
+            RiskRules.InstallerTrust.UNKNOWN -> stringResource(R.string.av_install_unknown)
+        }
+        Text(
+            note,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * The app's declared permissions, grouped by danger tier (Dangerous → Signature
+ * → Normal). Honest framing: "requests", not "has" — this is the declared set,
+ * not the granted set.
+ */
+@Composable
+internal fun PermissionGroupsCard(permissions: List<String>) {
+    if (permissions.isEmpty()) return
+    val groups = remember(permissions) { PermissionGroups.grouped(permissions) }
+    SuiteCard {
+        Text(
+            stringResource(R.string.av_perms_title, permissions.distinct().size),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Medium,
+        )
+        for ((tier, perms) in groups) {
+            Spacer(Modifier.height(UnderstoryTheme.spacing.sm))
+            val (tierLabel, tierColor) = when (tier) {
+                PermissionGroups.Tier.DANGEROUS ->
+                    stringResource(R.string.av_perm_tier_dangerous) to MaterialTheme.colorScheme.error
+                PermissionGroups.Tier.SIGNATURE ->
+                    stringResource(R.string.av_perm_tier_signature) to UnderstoryTheme.semantic.warning
+                PermissionGroups.Tier.NORMAL ->
+                    stringResource(R.string.av_perm_tier_normal) to UnderstoryTheme.semantic.dim
+            }
+            Text(
+                "$tierLabel (${perms.size})",
+                style = MaterialTheme.typography.labelMedium,
+                color = tierColor,
+            )
+            for (p in perms) {
+                Text(
+                    PermissionGroups.shortName(p),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The "take action" card for an installed app: deep-links to the OS App-Info
+ * screen, the uninstall confirmation, and Play Protect. We never uninstall or
+ * revoke on the user's behalf — every control hands off to the system screen
+ * where the user decides. [pkg] is the target package.
+ */
+@Composable
+internal fun AppActionsCard(pkg: String) {
+    val ctx = LocalContext.current
+    val canDetails = remember(pkg) { SettingsDeepLinks.canOpenAppDetails(ctx, pkg) }
+    val canPlayProtect = remember { SettingsDeepLinks.canOpenPlayProtect(ctx) }
+    SuiteCard {
+        Text(
+            stringResource(R.string.av_actions_title),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Medium,
+        )
+        Spacer(Modifier.height(UnderstoryTheme.spacing.sm))
+        SecureOutlinedButton(
+            onClick = { SettingsDeepLinks.openAppDetails(ctx, pkg) },
+            enabled = canDetails,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Launch,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(UnderstoryTheme.spacing.xs))
+            Text(stringResource(R.string.av_action_app_info))
+        }
+        Spacer(Modifier.height(UnderstoryTheme.spacing.xs))
+        SecureOutlinedButton(onClick = { SettingsDeepLinks.requestUninstall(ctx, pkg) }) {
+            Text(stringResource(R.string.av_action_uninstall))
+        }
+        Spacer(Modifier.height(UnderstoryTheme.spacing.xs))
+        SecureOutlinedButton(
+            onClick = { SettingsDeepLinks.openPlayProtect(ctx) },
+            enabled = canPlayProtect,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.OpenInNew,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(UnderstoryTheme.spacing.xs))
+            Text(stringResource(R.string.av_action_play_protect))
+        }
+    }
+}
+
 /** Periodic-scan opt-in toggle (§5.2). Default off; honest alerts-off sub-line. */
 @Composable
 internal fun PeriodicScanToggle(
@@ -472,6 +719,33 @@ internal fun PeriodicScanToggle(
     SuiteCard {
         SwitchRow(
             label = stringResource(R.string.av_periodic_label),
+            checked = enabled,
+            onCheckedChange = onToggle,
+            supporting = sub,
+        )
+    }
+}
+
+/**
+ * On-install alert opt-in (§5.1). Default off. When on, a freshly installed /
+ * updated app that scores High/Critical (while APK Check is open) fires a
+ * notification. Honest sub-line: the in-app banner shows regardless; this only
+ * governs the out-of-app alert, which needs the notification permission.
+ */
+@Composable
+internal fun InstallAlertToggle(
+    enabled: Boolean,
+    alertsGranted: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
+    val sub = when {
+        !enabled -> stringResource(R.string.av_install_alert_sub_off)
+        !alertsGranted -> stringResource(R.string.av_periodic_alerts_off)
+        else -> stringResource(R.string.av_install_alert_sub_on)
+    }
+    SuiteCard {
+        SwitchRow(
+            label = stringResource(R.string.av_install_alert_label),
             checked = enabled,
             onCheckedChange = onToggle,
             supporting = sub,

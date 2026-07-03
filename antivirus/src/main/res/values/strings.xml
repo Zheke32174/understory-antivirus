@@ -66,6 +66,48 @@
     <string name="av_notif_one">%1$s has a risky posture. Tap to review.</string>
     <string name="av_notif_many">%1$d apps have a risky posture. Tap to review.</string>
 
+    <!-- On-install alert (§5.1) -->
+    <string name="av_notif_install_title">A just-installed app scored high risk</string>
+    <string name="av_notif_install_body">%1$s was just installed and has a High/Critical posture. Tap to review.</string>
+    <string name="av_install_alert_label">Alert on risky new installs</string>
+    <string name="av_install_alert_sub_off">Off — new installs are still checked and shown in-app while APK Check is open.</string>
+    <string name="av_install_alert_sub_on">On — notify when a newly installed or updated app scores High or Critical (while APK Check is open).</string>
+
+    <!-- Risk score + rating -->
+    <string name="av_rating_low">Low</string>
+    <string name="av_rating_medium">Medium</string>
+    <string name="av_rating_high">High</string>
+    <string name="av_rating_critical">Critical</string>
+    <string name="av_rating_chip">Risk: %1$s</string>
+    <string name="av_score_out_of">%1$d / 100</string>
+    <string name="av_score_caption">A heuristic ranking score from the structural signals below — not a probability. Higher means more of the risky patterns fired. Findings are advisory, not verdicts.</string>
+
+    <!-- Audit summary -->
+    <string name="av_audit_summary">%1$d of %2$d installed apps flagged</string>
+    <string name="av_audit_summary_known_bad">%1$d match the deny-list.</string>
+
+    <!-- Detail: install source -->
+    <string name="av_install_source_title">Installed from</string>
+    <string name="av_install_trusted">A recognised app store. Store install-time checks applied.</string>
+    <string name="av_install_sideload">Not from a recognised store (browser, file manager, adb, or unknown). Sideloading skips a store\'s install-time checks.</string>
+    <string name="av_install_unknown">Install source could not be determined.</string>
+
+    <!-- Detail: permission groups -->
+    <string name="av_perms_title">Requests %1$d permission(s)</string>
+    <string name="av_perm_tier_dangerous">Dangerous / high-power</string>
+    <string name="av_perm_tier_signature">System (signature) binds</string>
+    <string name="av_perm_tier_normal">Normal (granted at install)</string>
+
+    <!-- Detail: actions -->
+    <string name="av_actions_title">Take action</string>
+    <string name="av_action_app_info">Open app info in Settings</string>
+    <string name="av_action_uninstall">Uninstall this app</string>
+    <string name="av_action_play_protect">Open Play Protect</string>
+
+    <!-- Detail section headers -->
+    <string name="av_section_permissions">Permissions</string>
+    <string name="av_section_actions">Actions</string>
+
     <!-- Scan APK screen -->
     <string name="av_scan_title">Scan APK</string>
     <string name="av_scan_pick">Pick APK file</string>

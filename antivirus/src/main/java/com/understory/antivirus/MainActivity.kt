@@ -327,6 +327,7 @@ class ScanViewModel : ViewModel() {
     var scanError by mutableStateOf<String?>(null)
     var scanning by mutableStateOf(false)
     var auditReports by mutableStateOf<List<ApkAnalyzer.Report>?>(null)
+    var auditSummary by mutableStateOf<ApkAnalyzer.AuditSummary?>(null)
     var auditError by mutableStateOf<String?>(null)
     var auditSelected by mutableStateOf<ApkAnalyzer.Report?>(null)
     var auditWorking by mutableStateOf(false)
@@ -535,11 +536,17 @@ private fun AppsSection(pad: PaddingValues) {
             scope.launch {
                 val result = withContext(Bg.io) {
                     runCatching {
-                        ApkAnalyzer.auditInstalled(ctx) { done, total -> vm.auditProgress = done to total }
+                        ApkAnalyzer.auditInstalledWithSummary(ctx) { done, total ->
+                            vm.auditProgress = done to total
+                        }
                     }
                 }
                 result
-                    .onSuccess { vm.auditReports = it; vm.auditError = null }
+                    .onSuccess {
+                        vm.auditReports = it.flagged
+                        vm.auditSummary = it.summary
+                        vm.auditError = null
+                    }
                     .onFailure { vm.auditError = "Audit failed: ${it.message ?: it.javaClass.simpleName}" }
                 vm.auditWorking = false
             }
@@ -623,6 +630,11 @@ private fun AppsSection(pad: PaddingValues) {
                 }
             }
             else -> {
+                vm.auditSummary?.let { summary ->
+                    Spacer(Modifier.height(UnderstoryTheme.spacing.sm))
+                    AuditSummaryCard(summary)
+                    Spacer(Modifier.height(UnderstoryTheme.spacing.sm))
+                }
                 SuiteSectionHeader(stringResource(R.string.av_audit_flagged_count, reports.size))
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.sm),
@@ -661,6 +673,7 @@ private fun AuditDetail(
     ) {
         Spacer(Modifier.height(UnderstoryTheme.spacing.sm))
         ReportHeaderCard(report)
+        report.installSource?.let { InstallSourceCard(it) }
         if (report.findings.isEmpty()) {
             SuiteCard {
                 Text(
@@ -672,6 +685,16 @@ private fun AuditDetail(
         } else {
             SuiteSectionHeader(stringResource(R.string.av_section_findings))
             report.findings.forEach { FindingCard(it) }
+        }
+        if (report.permissions.isNotEmpty()) {
+            SuiteSectionHeader(stringResource(R.string.av_section_permissions))
+            PermissionGroupsCard(report.permissions)
+        }
+        // "Take action" deep-links — installed apps only (a SAF-scanned raw APK
+        // isn't installed, so there's no App-Info screen to open).
+        if (report.installSource != null && report.packageName.contains('.')) {
+            SuiteSectionHeader(stringResource(R.string.av_section_actions))
+            AppActionsCard(report.packageName)
         }
         SecureButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
             Text(stringResource(R.string.av_audit_back_to_list))
@@ -695,6 +718,7 @@ private fun DefinitionsSection(pad: PaddingValues) {
     var pendingOlderUri by remember { mutableStateOf<Uri?>(null) }
     var periodicOn by remember { mutableStateOf(PeriodicScan.isEnabled(ctx)) }
     var alertsGranted by remember { mutableStateOf(PeriodicScan.alertsAllowed(ctx)) }
+    var installAlertsOn by remember { mutableStateOf(PeriodicScan.installAlertsEnabled(ctx)) }
 
     LaunchedEffect(Unit) {
         withContext(Bg.io) { BlocklistStore.ensureLoaded(ctx) }
@@ -707,6 +731,17 @@ private fun DefinitionsSection(pad: PaddingValues) {
         alertsGranted = granted
         PeriodicScan.setEnabled(ctx, true)
         periodicOn = true
+    }
+
+    val requestInstallNotif = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        alertsGranted = granted
+        // Enable the opt-in regardless — the in-app banner still works if the
+        // user declines the notification permission; only the out-of-app alert
+        // needs it. Honest degradation, no dead control.
+        PeriodicScan.setInstallAlertsEnabled(ctx, true)
+        installAlertsOn = true
     }
 
     val runImport: (Uri, Boolean) -> Unit = { uri, allowOlder ->
@@ -787,6 +822,22 @@ private fun DefinitionsSection(pad: PaddingValues) {
                 }
             },
         )
+        InstallAlertToggle(
+            enabled = installAlertsOn,
+            alertsGranted = alertsGranted,
+            onToggle = { on ->
+                if (on) {
+                    if (PeriodicScan.alertsAllowed(ctx)) {
+                        PeriodicScan.setInstallAlertsEnabled(ctx, true)
+                        installAlertsOn = true; alertsGranted = true
+                    } else {
+                        requestInstallNotif.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                } else {
+                    PeriodicScan.setInstallAlertsEnabled(ctx, false); installAlertsOn = false
+                }
+            },
+        )
 
         SuiteSectionHeader(stringResource(R.string.av_section_about))
         SuiteCard {
@@ -826,7 +877,20 @@ private fun OnNewInstall(onResult: (ApkAnalyzer.Report) -> Unit) {
                             ApkAnalyzer.analyzeInstalled(ctx, pkg, enabled)
                         }.getOrNull()
                     }
-                    if (report != null) onResult(report)
+                    if (report != null) {
+                        onResult(report)
+                        // §5.1 on-install surfacing: opt-in notification when a
+                        // freshly installed/updated app scores High/Critical.
+                        // The in-app banner (onResult) always shows; this only
+                        // adds the out-of-app alert the user opted into.
+                        val notable = report.risk.rating == RiskRules.Rating.HIGH ||
+                            report.risk.rating == RiskRules.Rating.CRITICAL
+                        if (notable && PeriodicScan.installAlertsEnabled(ctx)) {
+                            withContext(Bg.io) {
+                                runCatching { ScanNotifier.postInstallAlert(ctx, report) }
+                            }
+                        }
+                    }
                 }
             }
         }
