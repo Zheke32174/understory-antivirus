@@ -22,4 +22,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "antivirus"
 include(":common-security")
+include(":elevation")
 include(":antivirus")

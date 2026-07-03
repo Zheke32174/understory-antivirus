@@ -108,6 +108,29 @@
     <string name="av_section_permissions">Permissions</string>
     <string name="av_section_actions">Actions</string>
 
+    <!-- Optional-elevation remediation (Shizuku / Dhizuku). These controls only
+         appear when the user has installed Shizuku or Dhizuku AND granted this
+         app access; otherwise the rootless Settings deep-links above stand alone. -->
+    <string name="av_elev_actions_title">Elevated remediation</string>
+    <string name="av_elev_actions_sub">Enabled by the elevation access you granted. These act on this app directly instead of only opening Settings.</string>
+    <string name="av_elev_uninstall">Uninstall now</string>
+    <string name="av_elev_force_stop">Force stop</string>
+    <string name="av_elev_suspend">Suspend</string>
+    <string name="av_elev_revoke_perms">Revoke %1$d dangerous permission(s)</string>
+    <string name="av_elev_result_ok">Done.</string>
+    <string name="av_elev_result_unsupported">Not supported on the granted tier: %1$s</string>
+    <string name="av_elev_result_failed">Couldn\'t complete that: %1$s</string>
+    <string name="av_elev_uninstall_confirm_title">Uninstall this app?</string>
+    <string name="av_elev_uninstall_confirm_body">This uninstalls %1$s using the elevation access you granted. This can\'t be undone from here. Hold to confirm.</string>
+    <string name="av_elev_suspend_confirm_title">Suspend this app?</string>
+    <string name="av_elev_suspend_confirm_body">%1$s will be greyed out and unable to launch until you un-suspend it from Settings.</string>
+
+    <!-- Settings: optional-elevation opt-in -->
+    <string name="av_section_elevation">Optional elevation</string>
+    <string name="av_elev_unlock_manage">uninstall, force-stop, or suspend a flagged app in-app</string>
+    <string name="av_elev_unlock_revoke">revoke a flagged app\'s dangerous permissions in-app</string>
+    <string name="av_elev_rootless_fallback">open the system app list to uninstall or change permissions yourself</string>
+
     <!-- Scan APK screen -->
     <string name="av_scan_title">Scan APK</string>
     <string name="av_scan_pick">Pick APK file</string>

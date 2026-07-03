@@ -694,7 +694,7 @@ private fun AuditDetail(
         // isn't installed, so there's no App-Info screen to open).
         if (report.installSource != null && report.packageName.contains('.')) {
             SuiteSectionHeader(stringResource(R.string.av_section_actions))
-            AppActionsCard(report.packageName)
+            AppActionsCard(report)
         }
         SecureButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
             Text(stringResource(R.string.av_audit_back_to_list))
@@ -838,6 +838,11 @@ private fun DefinitionsSection(pad: PaddingValues) {
                 }
             },
         )
+
+        // Optional-elevation opt-in (Shizuku / Dhizuku). Rootless by default; this
+        // only lets the user unlock in-app remediation on flagged apps. Honest
+        // grant flow lives in the shared ElevationCard.
+        AntivirusElevationSection()
 
         SuiteSectionHeader(stringResource(R.string.av_section_about))
         SuiteCard {

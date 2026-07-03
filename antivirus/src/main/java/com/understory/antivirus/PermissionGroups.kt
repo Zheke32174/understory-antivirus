@@ -77,6 +77,37 @@ object PermissionGroups {
     }
 
     /**
+     * The special-access / install-time permissions inside [DANGEROUS] that are
+     * NOT runtime permissions and therefore CANNOT be revoked with `pm revoke`
+     * (Shizuku) or `setPermissionGrantState` (Dhizuku). They are toggled through
+     * their own dedicated Settings surfaces (overlay draw-over, all-files access,
+     * usage access) or are install-time flags. We list them explicitly so
+     * [revocableDangerous] can exclude them — offering a "revoke" that the
+     * platform would silently no-op or error on would be a dishonest control.
+     */
+    private val NOT_RUNTIME_REVOCABLE = setOf(
+        "android.permission.MANAGE_EXTERNAL_STORAGE",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.PACKAGE_USAGE_STATS",
+        "android.permission.REQUEST_INSTALL_PACKAGES",
+        "android.permission.REQUEST_DELETE_PACKAGES",
+        "android.permission.QUERY_ALL_PACKAGES",
+    )
+
+    /**
+     * The subset of [permissions] that are genuine runtime (dangerous) permissions
+     * an elevated tier can actually revoke per-permission. Excludes the
+     * special-access entries in [NOT_RUNTIME_REVOCABLE], which have no
+     * `pm revoke` / `setPermissionGrantState` path. Returned sorted + distinct so
+     * the elevated "revoke dangerous permissions" action targets only what it can
+     * truly change — honest, no dead per-permission attempts.
+     */
+    fun revocableDangerous(permissions: List<String>): List<String> =
+        permissions.distinct()
+            .filter { it in DANGEROUS && it !in NOT_RUNTIME_REVOCABLE }
+            .sorted()
+
+    /**
      * Split [permissions] into the three tiers, each alphabetically sorted, with
      * empty tiers omitted. Tiers come back DANGEROUS → SIGNATURE → NORMAL so the
      * detail screen reads worst-first.

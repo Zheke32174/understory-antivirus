@@ -88,6 +88,13 @@ android {
 
 dependencies {
     implementation(project(":common-security"))
+    // Optional-elevation broker (Shizuku / Dhizuku). The suite is rootless by
+    // default; this module lights up privileged remediation on a flagged app's
+    // detail screen ONLY when the user has installed Shizuku/Dhizuku and granted
+    // this app access. It never gates core function. It transitively supplies the
+    // same pinned Compose surface via :common-security (no version skew), plus
+    // the Shizuku provider artifact the manifest references by name.
+    implementation(project(":elevation"))
 
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)

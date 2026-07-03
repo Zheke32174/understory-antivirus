@@ -654,16 +654,33 @@ internal fun PermissionGroupsCard(permissions: List<String>) {
 }
 
 /**
- * The "take action" card for an installed app: deep-links to the OS App-Info
- * screen, the uninstall confirmation, and Play Protect. We never uninstall or
- * revoke on the user's behalf — every control hands off to the system screen
- * where the user decides. [pkg] is the target package.
+ * The "take action" card for an installed app.
+ *
+ * ROOTLESS BY DEFAULT: the base controls here never uninstall or revoke on the
+ * user's behalf — each hands off to the system screen (App-Info, the OS
+ * uninstall confirm, Play Protect) where the user decides. These are always
+ * present and are the honest fallback.
+ *
+ * OPTIONAL ELEVATION: if — and only if — the user has installed Shizuku or
+ * Dhizuku and granted this app access, [ElevatedActionsSection] additionally
+ * lights up REAL in-app remediation (uninstall / force-stop / suspend / revoke
+ * dangerous permissions) above these deep-links. When no tier is granted that
+ * section renders nothing, so there is never a dead/disabled elevated control.
+ *
+ * [report] is the flagged app's report; its package + declared permissions feed
+ * both the rootless deep-links and the elevated per-permission revoke.
  */
 @Composable
-internal fun AppActionsCard(pkg: String) {
+internal fun AppActionsCard(report: ApkAnalyzer.Report) {
+    val pkg = report.packageName
     val ctx = LocalContext.current
     val canDetails = remember(pkg) { SettingsDeepLinks.canOpenAppDetails(ctx, pkg) }
     val canPlayProtect = remember { SettingsDeepLinks.canOpenPlayProtect(ctx) }
+
+    // Elevated remediation lights up first when a granted tier can perform it;
+    // otherwise this is a no-op and the rootless deep-links below stand alone.
+    ElevatedActionsSection(report)
+
     SuiteCard {
         Text(
             stringResource(R.string.av_actions_title),

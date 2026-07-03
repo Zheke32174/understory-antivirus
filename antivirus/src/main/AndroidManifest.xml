@@ -18,6 +18,16 @@
     <uses-permission android:name="com.understory.suite.CAPS" />
 
     <!--
+      OPTIONAL elevation (see :elevation). The suite is rootless by default; this
+      permission is what the Shizuku manager checks when APK Check requests
+      access. It grants nothing on its own — no privileged action runs unless the
+      user has installed Shizuku AND explicitly granted this app. The Dhizuku half
+      (its API permission + <queries> block) is merged automatically from the
+      Dhizuku-API AAR, so no per-app copy is needed here.
+    -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+    <!--
       Antivirus permission posture: like firewall, this app legitimately
       needs QUERY_ALL_PACKAGES — its core function is enumerating
       installed apps and surfacing risky permission combinations.
@@ -205,6 +215,22 @@
             android:readPermission="com.understory.suite.CAPS"
             android:writePermission="com.understory.suite.CAPS_WRITE"
             android:grantUriPermissions="false" />
+
+        <!--
+          OPTIONAL elevation: Shizuku hands this app a binder through this
+          provider. Declared per :elevation's README. It is inert unless Shizuku
+          is installed and the user grants access; the shell UserService the
+          broker binds ships inside :elevation (instantiated across the process
+          boundary by name, not declared here) and is kept from R8 stripping by
+          :elevation's consumer-rules.pro.
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
     </application>
 

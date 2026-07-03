@@ -93,6 +93,16 @@ object SettingsDeepLinks {
         }
     }
 
+    /**
+     * Open the device's all-apps settings list. The honest rootless fallback for
+     * the optional-elevation settings card: when the user hasn't installed
+     * Shizuku/Dhizuku there is no in-app elevated remediation, so we point them at
+     * the OS surface where every app's uninstall / permissions live. Falls back to
+     * the top-level Settings screen.
+     */
+    fun openApplicationSettings(ctx: Context): Boolean =
+        launchFirst(ctx, listOf(Settings.ACTION_APPLICATION_SETTINGS, Settings.ACTION_SETTINGS))
+
     fun canOpenAppDetails(ctx: Context, pkg: String): Boolean = runCatching {
         Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
             .setData(Uri.fromParts("package", pkg, null))
