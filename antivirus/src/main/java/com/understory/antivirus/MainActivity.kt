@@ -1,19 +1,18 @@
 package com.understory.antivirus
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Debug
-import android.view.View
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,15 +23,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,30 +42,51 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.understory.security.Diagnostics
 import com.understory.security.DiagnosticsDump
 import com.understory.security.DiagnosticsScreen
 import com.understory.security.KeepAliveBackHandler
+import com.understory.security.SecureButton
+import com.understory.security.SecureOutlinedButton
 import com.understory.security.SuiteStatusFooter
-import com.understory.security.TransientFlight
 import com.understory.security.Tamper
 import com.understory.security.TestingMode
-import kotlinx.coroutines.Dispatchers
+import com.understory.security.TransientFlight
+import com.understory.security.ui.Bg
+import com.understory.security.ui.components.EmptyState
+import com.understory.security.ui.components.FatalScreen
+import com.understory.security.ui.components.SuiteCard
+import com.understory.security.ui.theme.UnderstoryAccent
+import com.understory.security.ui.theme.UnderstoryTheme
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
+    /** Result of the antivirus-specific tamper gate, held for the block screen. */
+    private var tamperBlockReason: String? = null
+
     private fun initialize() {
         val debuggerAttached = Debug.isDebuggerConnected() || Debug.waitingForDebugger()
-        if (debuggerAttached ||
-            Tamper.check(applicationContext).hardFail ||
-            com.understory.security.SuiteAttestation.verify(applicationContext).hardFail
-        ) {
-            finishAndRemoveTask(); return
+        val tamper = Tamper.check(applicationContext)
+        val avGate = AvTamperPolicy.evaluate(tamper)
+        val attestation = com.understory.security.SuiteAttestation.verify(applicationContext)
+
+        // For THIS app, a patcher merely INSTALLED is not a hard-fail — it's a
+        // finding (the app's whole job). Only signature-mismatch / Frida /
+        // Xposed (our own binary compromised) hard-fail, plus attestation and a
+        // live debugger. And we NEVER exit silently: on a hard-fail we render a
+        // full-screen explanation, then finish on the user's Close.
+        val hardBlockReason = when {
+            debuggerAttached -> "a debugger is attached to this build"
+            avGate.hardFail -> avGate.reason
+            attestation.hardFail -> "the suite attestation check failed"
+            else -> null
         }
 
         if (!TestingMode.ALLOW_SCREENSHOTS) {
@@ -86,23 +107,23 @@ class MainActivity : ComponentActivity() {
         }
         runCatching { WindowCompat.setDecorFitsSystemWindows(window, false) }
 
+        tamperBlockReason = hardBlockReason
+
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
-                Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0A)) {
-                    AntivirusRoot()
+            UnderstoryTheme(accent = UnderstoryAccent.ANTIVIRUS) {
+                val reason = tamperBlockReason
+                if (reason != null) {
+                    TamperBlockScreen(reason = reason, onClose = { finishAndRemoveTask() })
+                } else {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background,
+                    ) {
+                        AntivirusRoot()
+                    }
                 }
             }
         }
-
-        // Note: we deliberately do NOT set
-        // `window.decorView.filterTouchesWhenObscured = true` here. Per
-        // SAMSUNG_QUIRKS.md, Samsung One UI's Edge Panel and various
-        // system gesture overlays trigger FLAG_WINDOW_IS_OBSCURED on
-        // legitimate touches, and a global decor filter silently drops
-        // every tap underneath. This antivirus is read-only static
-        // analysis with no destructive actions, so per-control tap-
-        // jacking guards aren't needed; FLAG_SECURE on the window still
-        // prevents screenshot / overlay capture of scan results.
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -114,11 +135,12 @@ class MainActivity : ComponentActivity() {
         } catch (t: Throwable) {
             Diagnostics.error("antivirus.MainActivity", "onCreate threw: ${t.javaClass.simpleName}: ${t.message}")
             setContent {
-                Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
-                    Column(modifier = Modifier.padding(20.dp)) {
-                        Text("antivirus crash", color = Color(0xFFEF5350), fontSize = 18.sp)
-                        Text(t.toString(), color = Color(0xFFE0E0E0), fontSize = 11.sp)
-                    }
+                UnderstoryTheme(accent = UnderstoryAccent.ANTIVIRUS) {
+                    FatalScreen(
+                        title = "APK Check crash",
+                        reason = "Something went wrong starting the app.",
+                        details = t.toString(),
+                    )
                 }
             }
         }
@@ -139,19 +161,14 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         Diagnostics.log("antivirus.MainActivity", "onResume (transientFlight=${TransientFlight.isActive()})")
-        // Skip the hardFail re-check while we're round-tripping through a
-        // SAF picker. The onCreate check is the authoritative gate; running
-        // it on every resume turns into a self-inflicted denial-of-service
-        // because either probe (Tamper / SuiteAttestation) can transiently
-        // misreport during the foreground transition — most commonly when
-        // a peer suite app was recently sideloaded with a mismatched
-        // signing cert (mid-keystore-rotation), making the app close
-        // mid-scan with no visible error. The scan worker still calls
-        // Tamper.check on hot paths if needed.
+        // Skip the re-check while round-tripping a SAF picker (the onCreate
+        // check is authoritative). Otherwise a transient probe misread during
+        // the foreground transition would DoS the app mid-scan.
         if (TransientFlight.isActive()) return
         Tamper.invalidate()
-        if (Tamper.check(applicationContext).hardFail) {
-            Diagnostics.error("antivirus.MainActivity", "Tamper.check hardFail on resume — finishing")
+        val avGate = AvTamperPolicy.evaluate(Tamper.check(applicationContext))
+        if (avGate.hardFail) {
+            Diagnostics.error("antivirus.MainActivity", "AvTamperPolicy hardFail on resume — finishing")
             finishAndRemoveTask()
         }
     }
@@ -162,14 +179,30 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** Full-screen honest tamper explanation (§6). Never a bare silent finish. */
+@Composable
+private fun TamperBlockScreen(reason: String, onClose: () -> Unit) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        FatalScreen(
+            title = stringResource(R.string.av_tamper_block_title),
+            reason = stringResource(R.string.av_tamper_block_reason, reason),
+            modifier = Modifier.weight(1f),
+        )
+        SecureButton(
+            onClick = onClose,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(UnderstoryTheme.spacing.lg),
+        ) {
+            Text(stringResource(R.string.av_tamper_block_close))
+        }
+    }
+}
+
 private enum class Mode { Initial, ScanApk, AuditInstalled, Diagnostics }
 
 @Composable
 private fun AntivirusRoot() {
-    // Save the mode *as a String* across activity recreation — earlier
-    // attempt used the Kotlin enum directly via rememberSaveable's
-    // AutoSaver, but the shipped APK contained the "cannot be saved"
-    // error which suggests AutoSaver was rejecting it. String is safe.
     var modeName by rememberSaveable { mutableStateOf(Mode.Initial.name) }
     val mode = remember(modeName) { Mode.valueOf(modeName) }
     val setMode: (Mode) -> Unit = {
@@ -208,149 +241,242 @@ private fun InitialScreen(
     onDiagnostics: () -> Unit,
 ) {
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+
     val playProtect = remember { PlayProtectStatus.check(ctx) }
+    var defsMeta by remember { mutableStateOf<BlocklistStore.Meta?>(null) }
+    var tamperInfo by remember { mutableStateOf<TamperFindings.TamperInfo?>(null) }
+    var importResult by remember { mutableStateOf<String?>(null) }
+    var importIsError by remember { mutableStateOf(false) }
+    // When an import is refused for being an older serial, we hold the picked
+    // URI so the user can confirm an explicit "import older anyway".
+    var pendingOlderUri by remember { mutableStateOf<Uri?>(null) }
+    var periodicOn by remember { mutableStateOf(PeriodicScan.isEnabled(ctx)) }
+    var alertsGranted by remember { mutableStateOf(PeriodicScan.alertsAllowed(ctx)) }
+    // Freshness-while-open (§5.1): a context-registered PACKAGE_ADDED receiver,
+    // alive only while this screen is composed (foreground). This is the only
+    // rootless place a PACKAGE_ADDED receiver still fires. NOT background
+    // real-time — the banner copy says so.
+    var freshInstall by remember { mutableStateOf<ApkAnalyzer.Report?>(null) }
+    OnNewInstall { report -> freshInstall = report }
+
+    // Load definitions meta + tamper info off the main thread on first show.
+    LaunchedEffect(Unit) {
+        withContext(Bg.io) { BlocklistStore.ensureLoaded(ctx) }
+        defsMeta = BlocklistStore.meta()
+        val report = withContext(Bg.io) { Tamper.check(ctx.applicationContext) }
+        tamperInfo = withContext(Bg.io) { TamperFindings.build(ctx, report) }
+    }
+
+    val requestNotif = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        alertsGranted = granted
+        // Whether granted or denied, periodic scanning proceeds; alerts just
+        // degrade if denied. Enable the worker now.
+        PeriodicScan.setEnabled(ctx, true)
+        periodicOn = true
+    }
+
+    // Shared import runner: reads the URI off-main, imports, and maps the
+    // outcome to an honest card state. allowOlder=true is the explicit
+    // "import older anyway" confirm path.
+    val runImport: (Uri, Boolean) -> Unit = { uri, allowOlder ->
+        scope.launch {
+            val outcome = withContext(Bg.io) {
+                runCatching {
+                    ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?.let { BlocklistStore.importFrom(ctx, it, allowOlder = allowOlder) }
+                }.getOrNull()
+            }
+            when (outcome) {
+                is BlocklistStore.ImportResult.Imported -> {
+                    defsMeta = outcome.meta
+                    importIsError = false
+                    pendingOlderUri = null
+                    importResult = ctx.getString(
+                        R.string.av_defs_updated,
+                        outcome.meta.serial, outcome.meta.issued,
+                        ctx.getString(R.string.av_defs_counts, outcome.meta.apkCount, outcome.meta.certCount),
+                    )
+                }
+                is BlocklistStore.ImportResult.OlderSerial -> {
+                    importIsError = true
+                    pendingOlderUri = uri
+                    importResult = ctx.getString(R.string.av_defs_older, outcome.incoming, outcome.installed)
+                }
+                is BlocklistStore.ImportResult.Rejected, null -> {
+                    importIsError = true
+                    pendingOlderUri = null
+                    importResult = ctx.getString(R.string.av_defs_bad)
+                }
+            }
+        }
+    }
+
+    val importDefs = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri: Uri? ->
+        TransientFlight.end()
+        if (uri == null) return@rememberLauncherForActivityResult
+        runImport(uri, false)
+    }
+
     Column(
-        modifier = Modifier.fillMaxSize().padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = Modifier.fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(UnderstoryTheme.spacing.lg),
+        verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.md),
     ) {
-        Text("antivirus", color = Color(0xFFE0E0E0), fontSize = 28.sp)
         Text(
-            "Static APK + installed-app analysis. Hash check, signing-cert check, " +
-                "permission-combination heuristics. No internet. No accessibility " +
-                "service. No real-time process monitoring (those would need root or " +
-                "privileged APIs the suite refuses).",
-            color = Color(0xFF9E9E9E),
-            fontSize = 13.sp,
+            stringResource(R.string.app_name),
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.onBackground,
         )
+        PositioningBanner()
+        freshInstall?.let { report ->
+            SuiteCard {
+                Text(
+                    "Just installed / updated: ${report.packageName} — ${report.verdict.name}. " +
+                        "Checked while APK Check is open (not background real-time).",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = verdictAccent(report.verdict),
+                )
+                report.findings.firstOrNull()?.let { f ->
+                    Text(
+                        "${f.severity.name}: ${f.title}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = severityAccent(f.severity),
+                    )
+                }
+            }
+        }
         PlayProtectCard(playProtect)
-        Box(
-            modifier = Modifier.fillMaxWidth()
-                .background(Color(0xFF1C1C1C), RoundedCornerShape(6.dp))
-                .padding(12.dp),
-        ) {
+        tamperInfo?.let { TamperCard(it) }
+        DefinitionsCard(
+            meta = defsMeta,
+            onImport = {
+                TransientFlight.begin()
+                runCatching { importDefs.launch(arrayOf("*/*")) }
+                    .onFailure { TransientFlight.end() }
+            },
+            transientResult = importResult,
+            isError = importIsError,
+            onImportOlder = pendingOlderUri?.let { uri -> { runImport(uri, true) } },
+        )
+        PeriodicScanToggle(
+            enabled = periodicOn,
+            alertsGranted = alertsGranted,
+            onToggle = { on ->
+                if (on) {
+                    // Request POST_NOTIFICATIONS (opt-in); the worker is enabled
+                    // in the permission callback regardless of grant.
+                    if (PeriodicScan.alertsAllowed(ctx)) {
+                        PeriodicScan.setEnabled(ctx, true); periodicOn = true; alertsGranted = true
+                    } else {
+                        requestNotif.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                } else {
+                    PeriodicScan.setEnabled(ctx, false); periodicOn = false
+                }
+            },
+        )
+        SuiteCard {
             Text(
-                "What this catches: known-bad APK hashes, repackager signing certs, " +
-                    "permission combinations that match malware shapes (SMS-stealer, " +
-                    "surveillance-suite, RAT), apps hidden from the launcher. What it " +
-                    "doesn't: novel zero-days, running-process behavior. Treat findings " +
-                    "as advisory, not verdicts.",
-                color = Color(0xFF9E9E9E),
-                fontSize = 11.sp,
+                stringResource(R.string.av_home_catches),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Spacer(Modifier.height(8.dp))
-        // Plain Button — antivirus is read-only static analysis, no
-        // destructive paths, no secret exposure. SecureButton is overkill
-        // here and trips the Samsung Edge Panel false-positive (see
-        // SAMSUNG_QUIRKS.md).
-        Button(onClick = onScanApk, modifier = Modifier.fillMaxWidth()) {
-            Text("Scan an APK file")
+        SecureButton(onClick = onScanApk, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(R.string.av_scan_apk))
         }
-        OutlinedButton(onClick = onAuditInstalled, modifier = Modifier.fillMaxWidth()) {
-            Text("Audit installed apps")
+        SecureOutlinedButton(onClick = onAuditInstalled, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(R.string.av_audit_installed))
         }
-        Spacer(Modifier.weight(1f))
-        OutlinedButton(onClick = onDiagnostics, modifier = Modifier.fillMaxWidth()) {
-            Text("Diagnostics")
+        SecureOutlinedButton(onClick = onDiagnostics, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(R.string.av_diagnostics))
         }
         SuiteStatusFooter()
     }
 }
 
-@Composable
-private fun PlayProtectCard(status: PlayProtectStatus.Status) {
-    val (label, accent) = when (status.state) {
-        PlayProtectStatus.State.ENABLED -> "Play Protect: ON" to Color(0xFF81C784)
-        PlayProtectStatus.State.DISABLED -> "Play Protect: OFF" to Color(0xFFEF5350)
-        PlayProtectStatus.State.NOT_APPLICABLE -> "Play Protect: not applicable" to Color(0xFF9E9E9E)
-        PlayProtectStatus.State.UNKNOWN -> "Play Protect: unknown" to Color(0xFFFFB74D)
-    }
-    Box(
-        modifier = Modifier.fillMaxWidth()
-            .background(accent.copy(alpha = 0.10f), RoundedCornerShape(6.dp))
-            .padding(12.dp),
-    ) {
-        Column {
-            Text(label, color = accent, fontSize = 12.sp)
-            Text(status.explain, color = Color(0xFF9E9E9E), fontSize = 10.sp)
-        }
-    }
+/**
+ * Holds scan/audit results across configuration change AND process death is
+ * mitigated by re-derivable state; the Report list is transient (recomputed by
+ * re-running) but the in-flight results survive recreation here.
+ */
+class ScanViewModel : ViewModel() {
+    var scanReport by mutableStateOf<ApkAnalyzer.Report?>(null)
+    var scanError by mutableStateOf<String?>(null)
+    var auditReports by mutableStateOf<List<ApkAnalyzer.Report>?>(null)
+    var auditError by mutableStateOf<String?>(null)
+    var auditSelected by mutableStateOf<ApkAnalyzer.Report?>(null)
 }
 
 @Composable
 private fun ScanApkScreen(onBack: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var report by remember { mutableStateOf<ApkAnalyzer.Report?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
+    val vm: ScanViewModel = viewModel()
     var working by remember { mutableStateOf(false) }
 
     val pickApk = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri: Uri? ->
-        // Always close the transient-flight guard FIRST, even on null/cancel
-        // so we don't leave the on-resume hardFail check suppressed forever
-        // if the user backs out of the picker.
         TransientFlight.end()
         Diagnostics.log("antivirus.ScanApk", "pickApk result: uri=${if (uri != null) "non-null" else "null"}")
         if (uri == null) return@rememberLauncherForActivityResult
         working = true
-        // Move scan off main thread — APK SHA-256 of a 50MB file
-        // freezes the UI noticeably otherwise.
         scope.launch {
-            Diagnostics.log("antivirus.ScanApk", "scan starting on Dispatchers.IO")
-            val result = withContext(Dispatchers.IO) {
-                runCatching { ApkAnalyzer.analyzeUri(ctx, uri) }
-            }
+            val result = withContext(Bg.io) { runCatching { ApkAnalyzer.analyzeUri(ctx, uri) } }
             result
-                .onSuccess {
-                    Diagnostics.log("antivirus.ScanApk", "scan ok: ${it.packageName} verdict=${it.verdict.name}")
-                    report = it; error = null
-                }
+                .onSuccess { vm.scanReport = it; vm.scanError = null }
                 .onFailure {
-                    Diagnostics.error("antivirus.ScanApk",
-                        "scan failed: ${it.javaClass.simpleName}: ${it.message}")
-                    error = "Scan failed: ${it.message ?: it.javaClass.simpleName}"
+                    Diagnostics.error("antivirus.ScanApk", "scan failed: ${it.javaClass.simpleName}: ${it.message}")
+                    vm.scanError = "Scan failed: ${it.message ?: it.javaClass.simpleName}"
                 }
             working = false
         }
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(UnderstoryTheme.spacing.lg),
+        verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.sm),
     ) {
-        Text("scan APK", color = Color(0xFFE0E0E0), fontSize = 22.sp)
-        Button(
+        Text(
+            stringResource(R.string.av_scan_title),
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+        SecureButton(
             onClick = {
+                if (working) return@SecureButton
                 Diagnostics.log("antivirus.ScanApk", "Pick APK file: tap")
-                // Open the transient-flight guard BEFORE the picker fires.
-                // The launcher callback closes it. If launch itself throws,
-                // we close it here so the on-resume hardFail check isn't
-                // suppressed forever.
                 TransientFlight.begin()
-                runCatching {
-                    // Drop the strict APK MIME hint — Drive / Files / Samsung
-                    // My Files often expose APKs as application/octet-stream,
-                    // and a strict filter hides them entirely. We validate by
-                    // parsing in ApkAnalyzer; an unparseable file produces a
-                    // clear "(unparseable)" report.
-                    pickApk.launch(arrayOf("*/*"))
-                }.onFailure {
-                    TransientFlight.end()
-                    Diagnostics.error("antivirus.ScanApk",
-                        "pickApk.launch threw: ${it.javaClass.simpleName}: ${it.message}")
-                    error = "Couldn't open file picker: ${it.message}"
-                }
+                runCatching { pickApk.launch(arrayOf("*/*")) }
+                    .onFailure {
+                        TransientFlight.end()
+                        vm.scanError = "Couldn't open file picker: ${it.message}"
+                    }
             },
+            enabled = !working,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text(if (working) "Scanning…" else "Pick APK file")
+            Text(if (working) stringResource(R.string.av_scanning) else stringResource(R.string.av_scan_pick))
         }
-        error?.let { Text(it, color = Color(0xFFEF5350), fontSize = 12.sp) }
-        report?.let { ReportView(it) }
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Back") }
+        if (working) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        vm.scanError?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+        }
+        vm.scanReport?.let { ReportView(it) }
+        Spacer(Modifier.height(UnderstoryTheme.spacing.sm))
+        SecureOutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(R.string.av_back))
+        }
     }
 }
 
@@ -358,156 +484,224 @@ private fun ScanApkScreen(onBack: () -> Unit) {
 private fun AuditInstalledScreen(onBack: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var reports by remember { mutableStateOf<List<ApkAnalyzer.Report>?>(null) }
+    val vm: ScanViewModel = viewModel()
     var working by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var selected by remember { mutableStateOf<ApkAnalyzer.Report?>(null) }
+    var progress by remember { mutableStateOf(0 to 0) }
+
+    val runAudit: () -> Unit = {
+        if (!working) {
+            working = true
+            vm.auditSelected = null
+            scope.launch {
+                val result = withContext(Bg.io) {
+                    runCatching {
+                        ApkAnalyzer.auditInstalled(ctx) { done, total -> progress = done to total }
+                    }
+                }
+                result
+                    .onSuccess { vm.auditReports = it; vm.auditError = null }
+                    .onFailure { vm.auditError = "Audit failed: ${it.message ?: it.javaClass.simpleName}" }
+                working = false
+            }
+        }
+    }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxSize().padding(UnderstoryTheme.spacing.lg),
+        verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.sm),
     ) {
-        Text("audit installed apps", color = Color(0xFFE0E0E0), fontSize = 22.sp)
-        if (reports == null) {
-            Text(
-                "Scans your installed user apps for risky permission combinations. " +
-                    "System apps you can't uninstall are skipped (no actionable result). " +
-                    "Slow on devices with many apps — give it a moment.",
-                color = Color(0xFF9E9E9E), fontSize = 12.sp,
-            )
-            Button(
-                onClick = {
-                    if (working) return@Button
-                    working = true
-                    // Move audit off main thread. SHA-256 of every
-                    // installed APK on a Dispatchers.IO coroutine; UI
-                    // updates back on main when done.
-                    scope.launch {
-                        val result = withContext(Dispatchers.IO) {
-                            runCatching { ApkAnalyzer.auditInstalled(ctx) }
-                        }
-                        result
-                            .onSuccess { reports = it; error = null }
-                            .onFailure { error = "Audit failed: ${it.message ?: it.javaClass.simpleName}" }
-                        working = false
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(if (working) "Auditing…" else "Run audit")
+        Text(
+            stringResource(R.string.av_audit_title),
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+        val reports = vm.auditReports
+        val selected = vm.auditSelected
+        when {
+            reports == null -> {
+                Text(
+                    stringResource(R.string.av_audit_intro),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                SecureButton(onClick = runAudit, enabled = !working, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (working) stringResource(R.string.av_auditing_progress, progress.first, progress.second)
+                    else stringResource(R.string.av_audit_run))
+                }
+                if (working && progress.second > 0) {
+                    LinearProgressIndicator(
+                        progress = { progress.first.toFloat() / progress.second },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                vm.auditError?.let {
+                    Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                }
             }
-            error?.let { Text(it, color = Color(0xFFEF5350), fontSize = 12.sp) }
-        } else if (selected != null) {
-            ReportView(selected!!)
-            OutlinedButton(
-                onClick = { selected = null },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Back to list") }
-        } else {
-            val list = reports!!
-            Text(
-                "${list.size} app(s) flagged. Tap an entry for details.",
-                color = Color(0xFF9E9E9E), fontSize = 12.sp,
-            )
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-                modifier = Modifier.fillMaxWidth().weight(1f),
-            ) {
-                items(list, key = { it.packageName }) { r ->
-                    Box(
-                        modifier = Modifier.fillMaxWidth()
-                            .background(verdictColor(r.verdict).copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                            .padding(10.dp),
-                    ) {
-                        Column {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                            ) {
-                                Text(r.packageName, color = Color(0xFFE0E0E0), fontSize = 12.sp)
-                                Text(r.verdict.name, color = verdictColor(r.verdict), fontSize = 11.sp)
-                            }
-                            r.findings.firstOrNull()?.let { f ->
-                                Text(
-                                    "${f.severity.name}: ${f.title}",
-                                    color = severityColor(f.severity), fontSize = 10.sp,
-                                )
-                            }
-                        }
-                        Box(
-                            modifier = Modifier.fillMaxSize()
-                                .padding(0.dp),
-                        ) {
-                            // Whole-row clickable overlay handled by an invisible button.
-                            OutlinedButton(
-                                onClick = { selected = r },
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text("Details", color = Color(0xFFE0E0E0))
-                            }
-                        }
+            selected != null -> {
+                Column(
+                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.sm),
+                ) {
+                    ReportView(selected)
+                    SecureOutlinedButton(
+                        onClick = { vm.auditSelected = null },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(stringResource(R.string.av_audit_back_to_list)) }
+                }
+            }
+            reports.isEmpty() -> {
+                Column(Modifier.weight(1f)) {
+                    EmptyState(
+                        title = stringResource(R.string.av_audit_clean_title),
+                        body = stringResource(R.string.av_audit_clean_body),
+                    )
+                }
+                SecureOutlinedButton(onClick = runAudit, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.av_audit_rerun))
+                }
+            }
+            else -> {
+                Text(
+                    stringResource(R.string.av_audit_flagged_count, reports.size),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(UnderstoryTheme.spacing.xs),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                ) {
+                    items(reports, key = { it.packageName }) { r ->
+                        AuditRow(r, onClick = { vm.auditSelected = r })
                     }
+                }
+                SecureOutlinedButton(onClick = runAudit, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.av_audit_rerun))
                 }
             }
         }
-        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Back") }
+        SecureOutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(R.string.av_back))
+        }
+    }
+}
+
+/** D#5 fix: whole-row clickable card + trailing chevron, no overlaid button. */
+@Composable
+private fun AuditRow(r: ApkAnalyzer.Report, onClick: () -> Unit) {
+    SuiteCard(onClick = onClick) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    r.packageName,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                r.findings.firstOrNull()?.let { f ->
+                    Text(
+                        "${f.severity.name}: ${f.title}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = severityAccent(f.severity),
+                    )
+                }
+            }
+            Text(
+                r.verdict.name,
+                style = MaterialTheme.typography.bodyMedium,
+                color = verdictAccent(r.verdict),
+            )
+            Icon(
+                imageVector = Icons.Filled.ChevronRight,
+                contentDescription = stringResource(R.string.av_audit_details),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
 @Composable
 private fun ReportView(r: ApkAnalyzer.Report) {
-    Column(
-        modifier = Modifier.fillMaxWidth()
-            .background(verdictColor(r.verdict).copy(alpha = 0.10f), RoundedCornerShape(8.dp))
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
+    val ctx = LocalContext.current
+    SuiteCard {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text(r.packageName, color = Color(0xFFE0E0E0), fontSize = 14.sp)
-            Text(r.verdict.name, color = verdictColor(r.verdict), fontSize = 12.sp)
+            Text(
+                r.packageName,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                r.verdict.name,
+                style = MaterialTheme.typography.titleMedium,
+                color = verdictAccent(r.verdict),
+            )
         }
         Text(
             "${r.versionName ?: "?"} (${r.versionCode})",
-            color = Color(0xFF9E9E9E), fontSize = 11.sp,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            "apk sha256: ${r.apkSha256.take(16)}…",
-            color = Color(0xFF707070), fontSize = 10.sp,
+            "apk sha256: " + (r.apkSha256?.take(16)?.plus("…") ?: stringResource(R.string.av_apk_not_hashed)),
+            style = MaterialTheme.typography.bodyMedium,
+            color = UnderstoryTheme.semantic.dim,
         )
         r.certSha256?.let {
             Text(
                 "cert sha256: ${it.take(16)}…",
-                color = Color(0xFF707070), fontSize = 10.sp,
+                style = MaterialTheme.typography.bodyMedium,
+                color = UnderstoryTheme.semantic.dim,
             )
         }
         r.notes.forEach {
-            Text(it, color = Color(0xFFFFB74D), fontSize = 11.sp)
+            Text(it, style = MaterialTheme.typography.bodyMedium, color = UnderstoryTheme.semantic.warning)
         }
         if (r.findings.isEmpty()) {
             Text(
-                "No risky permission patterns detected.",
-                color = Color(0xFF81C784), fontSize = 11.sp,
+                stringResource(R.string.av_no_findings),
+                style = MaterialTheme.typography.bodyMedium,
+                color = UnderstoryTheme.semantic.success,
             )
         } else {
             Text(
-                "Findings:",
-                color = Color(0xFFE0E0E0), fontSize = 12.sp,
+                stringResource(R.string.av_findings),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
             )
             r.findings.forEach { f ->
-                Box(
-                    modifier = Modifier.fillMaxWidth()
-                        .background(severityColor(f.severity).copy(alpha = 0.10f), RoundedCornerShape(4.dp))
-                        .padding(8.dp),
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Column {
+                    Column(Modifier.padding(UnderstoryTheme.spacing.sm)) {
                         Text(
                             "${f.severity.name}: ${f.title}",
-                            color = severityColor(f.severity), fontSize = 11.sp,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = severityAccent(f.severity),
+                            fontWeight = FontWeight.Medium,
                         )
-                        Text(f.explain, color = Color(0xFF9E9E9E), fontSize = 10.sp)
+                        Text(
+                            f.explain,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        f.deepLink?.let { target ->
+                            val canOpen = SettingsDeepLinks.canOpen(ctx, target)
+                            Spacer(Modifier.height(UnderstoryTheme.spacing.xs))
+                            SecureOutlinedButton(
+                                onClick = { SettingsDeepLinks.open(ctx, target) },
+                                enabled = canOpen,
+                            ) {
+                                Text(stringResource(R.string.av_fix_in_settings))
+                            }
+                        }
                     }
                 }
             }
@@ -515,16 +709,69 @@ private fun ReportView(r: ApkAnalyzer.Report) {
     }
 }
 
-private fun verdictColor(v: ApkAnalyzer.Verdict): Color = when (v) {
-    ApkAnalyzer.Verdict.CLEAN -> Color(0xFF81C784)
-    ApkAnalyzer.Verdict.SUSPICIOUS -> Color(0xFFFFB74D)
-    ApkAnalyzer.Verdict.KNOWN_BAD -> Color(0xFFEF5350)
-    ApkAnalyzer.Verdict.UNKNOWN -> Color(0xFF9E9E9E)
+@Composable
+private fun verdictAccent(v: ApkAnalyzer.Verdict): Color = when (v) {
+    ApkAnalyzer.Verdict.CLEAN -> UnderstoryTheme.semantic.success
+    ApkAnalyzer.Verdict.SUSPICIOUS -> UnderstoryTheme.semantic.warning
+    ApkAnalyzer.Verdict.KNOWN_BAD -> MaterialTheme.colorScheme.error
+    ApkAnalyzer.Verdict.UNKNOWN -> UnderstoryTheme.semantic.dim
 }
 
-private fun severityColor(s: RiskRules.Severity): Color = when (s) {
-    RiskRules.Severity.CRITICAL -> Color(0xFFEF5350)
-    RiskRules.Severity.HIGH -> Color(0xFFFFB74D)
-    RiskRules.Severity.MED -> Color(0xFFE6C26B)
-    RiskRules.Severity.LOW -> Color(0xFF9E9E9E)
+/**
+ * Freshness-while-open (§5.1): registers a context-registered
+ * [android.content.BroadcastReceiver] for PACKAGE_ADDED / PACKAGE_REPLACED that
+ * lives only while this composable is in the STARTED lifecycle state (i.e. the
+ * app is foreground) — the only rootless place such a receiver still fires.
+ * When a package is added while the app is open, it runs an on-demand analyze
+ * of just that package and hands the report back for a top-of-screen banner.
+ * Explicitly NOT background real-time.
+ */
+@Composable
+private fun OnNewInstall(onResult: (ApkAnalyzer.Report) -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
+                val pkg = intent?.data?.schemeSpecificPart ?: return
+                if (pkg == ctx.packageName) return
+                scope.launch {
+                    val report = withContext(Bg.io) {
+                        runCatching {
+                            val enabled = EnabledAbusers.snapshot(ctx)
+                            ApkAnalyzer.analyzeInstalled(ctx, pkg, enabled)
+                        }.getOrNull()
+                    }
+                    if (report != null) onResult(report)
+                }
+            }
+        }
+        val filter = android.content.IntentFilter().apply {
+            addAction(android.content.Intent.ACTION_PACKAGE_ADDED)
+            addAction(android.content.Intent.ACTION_PACKAGE_REPLACED)
+            addDataScheme("package")
+        }
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME ->
+                    runCatching {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            ctx.registerReceiver(receiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
+                        } else {
+                            @Suppress("UnspecifiedRegisterReceiverFlag")
+                            ctx.registerReceiver(receiver, filter)
+                        }
+                    }
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE ->
+                    runCatching { ctx.unregisterReceiver(receiver) }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            runCatching { ctx.unregisterReceiver(receiver) }
+        }
+    }
 }

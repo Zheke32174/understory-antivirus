@@ -24,15 +24,16 @@
       Without it the installed-app-audit feature can't run.
 
       Explicitly NOT requesting:
-        - INTERNET: definitions are bundled in-APK (MVP). Phase 2 adds
-          opt-in HTTPS update via SAF-tree-based signed-blob downloads,
-          NOT a background sync service.
+        - INTERNET: there is NO network path at all. The signed deny-list
+          seed ships in-APK; updates arrive ONLY as a signed .ubl file the
+          user imports via SAF (BlocklistCodec/BlocklistStore). Never a
+          background sync, never an HTTPS fetch.
         - READ_MEDIA_*: file scanning uses SAF (ACTION_OPEN_DOCUMENT) so
           per-URI grants suffice.
         - ACCESSIBILITY: on-screen text scanning is explicitly out of
-          scope. Real-time process scanning would require this and we
-          refuse it for the same reasons the rest of the suite refuses
-          accessibility-as-system-access.
+          scope. We only ENUMERATE other apps' accessibility/device-admin/
+          notification-listener holdings (readable rootless) — we never
+          hold any of those slots ourselves.
     -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <!-- IP / general networking -->
@@ -95,8 +96,14 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" tools:node="remove" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" tools:node="remove" />
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" tools:node="remove" />
-    <!-- Notifications / overlays -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" tools:node="remove" />
+    <!--
+      Notifications: POST_NOTIFICATIONS is declared normally (NOT stripped).
+      It is not a scarce slot — any app may post — and it is opt-in at runtime.
+      It backs the opt-in periodic-scan alert (§5.2). If the user denies it,
+      periodic scanning still runs and results appear in-app; no dead control.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Overlays -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" tools:node="remove" />
     <!-- Package install/delete — we only inspect, not modify. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" tools:node="remove" />
@@ -193,7 +200,7 @@
 
         <provider
             android:name=".SuiteCapsProvider"
-            android:authorities="com.understory.antivirus.suitecaps"
+            android:authorities="${applicationId}.suitecaps"
             android:exported="true"
             android:readPermission="com.understory.suite.CAPS"
             android:writePermission="com.understory.suite.CAPS_WRITE"

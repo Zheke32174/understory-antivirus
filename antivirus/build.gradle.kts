@@ -63,6 +63,12 @@ android {
         checkReleaseBuilds = true
     }
 
+    // Robolectric needs Android resources on the unit-test classpath so the
+    // BlocklistCodec / seed tests can read res/raw/blocklist_seed.ubl.
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+
     flavorDimensions += "channel"
     productFlavors {
         create("prod") {
@@ -85,8 +91,28 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    // ViewModel in Compose (scan/audit state survival across recreation, D#16).
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    // LocalLifecycleOwner + LifecycleEventObserver for the on-open PACKAGE_ADDED
+    // watcher (§5.1 freshness-while-open).
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.material3:material3")
+    // Material icons (ChevronRight, etc.) for the audit-row affordance.
+    implementation("androidx.compose.material:material-icons-extended")
+
+    // Periodic re-scan (§5) — WorkManager. This is the only viable rootless
+    // "watch for new/updated apps" mechanism; inotify on /data/app is
+    // impossible rootless and manifest PACKAGE_ADDED receivers are dead since
+    // API 26 (see SUITE_ROADMAP.md).
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+
+    testImplementation("junit:junit:4.13.2")
+    // Robolectric gives unit tests a working org.json + resource loader so the
+    // BlocklistCodec / seed tests run on the JVM without an emulator (mirrors
+    // common-security's test setup).
+    testImplementation("org.robolectric:robolectric:4.13")
+    testImplementation("androidx.test:core:1.6.1")
 }

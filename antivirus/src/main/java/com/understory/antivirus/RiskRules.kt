@@ -1,22 +1,32 @@
 package com.understory.antivirus
 
 /**
- * Static permission-combination rules. We classify a manifest as
- * having a HIGH-RISK posture when its declared permissions match a
- * known-bad combination (the kinds of things spyware reaches for).
- * The user gets a flag, not a verdict — these rules are heuristic by
- * design, and many legitimate apps trip them. The point is to surface
- * what the app *can do* in plain English so the user makes the call.
+ * Static permission-combination rules. We classify a manifest as having a
+ * HIGH-RISK posture when its declared permissions match a known-bad
+ * combination (the kinds of things spyware reaches for). The user gets a flag,
+ * not a verdict — these rules are heuristic by design, and many legitimate
+ * apps trip them. The point is to surface what the app *can do* in plain
+ * English so the user makes the call.
  *
  * Severity ordering for UI display:
  *   CRITICAL  — combinations that almost never appear in legitimate apps
  *               (e.g. RECEIVE_SMS + INTERNET + READ_CONTACTS = textbook
  *                SMS-stealer profile).
- *   HIGH      — sensitive single permissions (BIND_ACCESSIBILITY_SERVICE,
- *                MANAGE_EXTERNAL_STORAGE, BIND_DEVICE_ADMIN).
- *   MED       — combinations that warrant attention but have legitimate
- *                uses (RECORD_AUDIO + INTERNET, CAMERA + INTERNET).
+ *   HIGH      — sensitive single capabilities (declares an accessibility
+ *                service, a device-admin receiver, MANAGE_EXTERNAL_STORAGE).
+ *   MED       — combinations that warrant attention but have legitimate uses
+ *                (RECORD_AUDIO + INTERNET, CAMERA + INTERNET).
  *   LOW       — single permissions that aren't dangerous alone.
+ *
+ * Findings are returned **most-severe first** — CRITICAL(ordinal 0) leads.
+ *
+ * Note on abuse detection: the highest-value signals (accessibility service,
+ * device-admin, notification-listener) are NOT `uses-permission` entries — the
+ * `BIND_*` permissions are component-protection permissions the *system*
+ * holds. A real abuser DECLARES a `<service android:permission="…BIND_*">`, it
+ * does not `<uses-permission>` it. So those live in [analyzeComponents], keyed
+ * on declared components (installed apps) or the parsed component-permission
+ * lists (SAF-scanned APKs) — never on the requested-permission set.
  */
 object RiskRules {
 
@@ -26,27 +36,36 @@ object RiskRules {
         val severity: Severity,
         val title: String,
         val explain: String,
+        /**
+         * Optional "Fix in Settings" revoke destination for enabled-abuser
+         * findings (§2.1b). Null for static-shape findings, which have no
+         * single settings screen to jump to.
+         */
+        val deepLink: SettingsDeepLinks.Target? = null,
     )
 
+    const val PERM_ACCESSIBILITY = "android.permission.BIND_ACCESSIBILITY_SERVICE"
+    const val PERM_DEVICE_ADMIN = "android.permission.BIND_DEVICE_ADMIN"
+    const val PERM_NOTIFICATION_LISTENER = "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+
     /**
-     * Apply the rules to a permission set and return findings ordered
-     * by severity descending.
+     * Apply the permission-combination rules to a requested-permission set and
+     * return findings, most-severe first. Component-based abuse detection is
+     * separate — see [analyzeComponents].
      */
     fun analyze(permissions: Set<String>): List<Finding> {
         val findings = mutableListOf<Finding>()
 
-        // CRITICAL combos — almost-always-bad signatures.
         val internet = "android.permission.INTERNET" in permissions
         val readSms = "android.permission.READ_SMS" in permissions
         val receiveSms = "android.permission.RECEIVE_SMS" in permissions
+        val sendSms = "android.permission.SEND_SMS" in permissions
         val readContacts = "android.permission.READ_CONTACTS" in permissions
         val readCallLog = "android.permission.READ_CALL_LOG" in permissions
         val recordAudio = "android.permission.RECORD_AUDIO" in permissions
         val camera = "android.permission.CAMERA" in permissions
         val fineLoc = "android.permission.ACCESS_FINE_LOCATION" in permissions
         val backgroundLoc = "android.permission.ACCESS_BACKGROUND_LOCATION" in permissions
-        val accessibility = "android.permission.BIND_ACCESSIBILITY_SERVICE" in permissions
-        val deviceAdmin = "android.permission.BIND_DEVICE_ADMIN" in permissions
         val systemAlertWindow = "android.permission.SYSTEM_ALERT_WINDOW" in permissions
         val packageUsageStats = "android.permission.PACKAGE_USAGE_STATS" in permissions
         val manageExternal = "android.permission.MANAGE_EXTERNAL_STORAGE" in permissions
@@ -73,38 +92,6 @@ object RiskRules {
                     "fitness or audio-recording categories.",
             )
         }
-        if (accessibility && internet) {
-            findings += Finding(
-                Severity.CRITICAL,
-                "Accessibility-service exfiltration profile",
-                "Has BIND_ACCESSIBILITY_SERVICE + internet. Accessibility services " +
-                    "can read on-screen text, type, and tap. Combined with " +
-                    "internet egress, this is the textbook shape of a credential-" +
-                    "stealing or RAT-class app. A small set of legitimate apps " +
-                    "(password managers, screen readers) need accessibility, but " +
-                    "scrutinize this one carefully.",
-            )
-        }
-        if (deviceAdmin) {
-            findings += Finding(
-                Severity.HIGH,
-                "Device admin requested",
-                "Apps with device-admin can lock the device, wipe data, and resist " +
-                    "uninstall. Legitimate uses are MDM tools and corporate-managed " +
-                    "apps. If unfamiliar, refuse the grant.",
-            )
-        }
-        if (accessibility) {
-            findings += Finding(
-                Severity.HIGH,
-                "Accessibility service",
-                "Accessibility services can read every on-screen UI element and " +
-                    "synthesize taps + text input. Grant only to apps where this is " +
-                    "core function (screen readers, password autofill, accessibility " +
-                    "tools). The Understory suite explicitly refuses to use " +
-                    "accessibility for this reason.",
-            )
-        }
         if (manageExternal) {
             findings += Finding(
                 Severity.HIGH,
@@ -123,6 +110,25 @@ object RiskRules {
                 "SYSTEM_ALERT_WINDOW lets the app draw on top of other apps. The " +
                     "common malicious use is tap-jacking — drawing a fake UI over " +
                     "real one to capture credentials.",
+            )
+        }
+        if (sendSms) {
+            findings += Finding(
+                Severity.MED,
+                "Can send SMS",
+                "SEND_SMS lets the app send text messages without opening the " +
+                    "messaging app — the premium-SMS toll-fraud shape. Legitimate " +
+                    "uses are two-factor and messaging apps; malware uses it to " +
+                    "silently subscribe you to paid shortcodes.",
+            )
+        }
+        if (readCallLog && internet) {
+            findings += Finding(
+                Severity.MED,
+                "Call log + internet",
+                "Reads your call log and can send it. Reveals who you call and " +
+                    "when — a common surveillance-exfil target. Dialers and " +
+                    "call-screening apps have legitimate reasons; scrutinize others.",
             )
         }
         if (internet && recordAudio) {
@@ -190,6 +196,74 @@ object RiskRules {
             )
         }
 
-        return findings.sortedByDescending { it.severity.ordinal }
+        return findings.sortedBy { it.severity.ordinal }
+    }
+
+    /**
+     * Declared-component abuse detection. Works for both the installed-app path
+     * (component permissions read off `ServiceInfo`/`ActivityInfo` via
+     * PackageManager) and the SAF-scanned-APK path (component permissions
+     * parsed out of the binary manifest). It keys on the CORRECT input — a
+     * `<service>`/`<receiver>` protected by a `BIND_*` permission — not on the
+     * requested-permission set, which is the A5 gap the v1 rules had.
+     *
+     * @param servicePermissions the `android:permission` of every `<service>`.
+     * @param receiverPermissions the `android:permission` of every `<receiver>`.
+     * @param requestedPermissions the app's `<uses-permission>` set (only used
+     *   for the a11y+internet exfiltration combo).
+     */
+    fun analyzeComponents(
+        servicePermissions: List<String>,
+        receiverPermissions: List<String>,
+        requestedPermissions: Set<String>,
+    ): List<Finding> {
+        val findings = mutableListOf<Finding>()
+        val declaresA11y = PERM_ACCESSIBILITY in servicePermissions
+        val declaresDeviceAdmin = PERM_DEVICE_ADMIN in receiverPermissions
+        val declaresNotifListener = PERM_NOTIFICATION_LISTENER in servicePermissions
+        val internet = "android.permission.INTERNET" in requestedPermissions
+
+        if (declaresA11y && internet) {
+            findings += Finding(
+                Severity.CRITICAL,
+                "Accessibility + internet exfiltration profile",
+                "Declares an accessibility service AND has internet. An a11y " +
+                    "service can read on-screen text, type, and tap; combined with " +
+                    "internet egress this is the textbook credential-stealing / " +
+                    "RAT shape. A small set of legitimate apps (password managers, " +
+                    "screen readers) need accessibility — scrutinize this one.",
+            )
+        }
+        if (declaresA11y) {
+            findings += Finding(
+                Severity.HIGH,
+                "Declares an accessibility service",
+                "An accessibility service can read every on-screen UI element and " +
+                    "synthesize taps + text input. Grant only where this is core " +
+                    "function (screen readers, password autofill, accessibility " +
+                    "tools). The Understory suite refuses accessibility for this " +
+                    "reason.",
+            )
+        }
+        if (declaresDeviceAdmin) {
+            findings += Finding(
+                Severity.HIGH,
+                "Declares a device-admin receiver",
+                "Device-admin apps can lock the device, wipe data, and resist " +
+                    "uninstall. Legitimate uses are MDM / corporate-managed apps. " +
+                    "If unfamiliar, refuse the grant.",
+            )
+        }
+        if (declaresNotifListener) {
+            findings += Finding(
+                Severity.HIGH,
+                "Declares a notification listener",
+                "A notification-listener service can read the content of every " +
+                    "notification — messages, one-time codes, banking alerts. " +
+                    "Legitimate uses are wearables and automation apps; spyware " +
+                    "uses it to harvest 2FA codes and message previews.",
+            )
+        }
+        return findings.sortedBy { it.severity.ordinal }
     }
 }

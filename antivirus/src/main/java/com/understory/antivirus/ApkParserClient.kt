@@ -24,10 +24,11 @@ import java.util.concurrent.atomic.AtomicReference
  * and the ServiceConnection callbacks are delivered on the main looper,
  * so blocking it here would deadlock (the check() below enforces this).
  *
- * Returns null when the isolated parser died or never answered — a
- * malformed APK crashed it, or the reply budget ran out. Callers treat
- * null as "suspicious file, parser crashed": a scan RESULT, not an app
- * error.
+ * Returns a tri-state [Outcome] so the caller can tell a *crash* (the parser
+ * died on malformed input — a real suspicious signal) from a *timeout* (a
+ * large file on a busy device — NOT a maliciousness signal). Collapsing both
+ * to null, as v1 did, false-labels a slow-but-clean file "suspicious" and
+ * erodes trust in the one verdict that matters.
  */
 internal object ApkParserClient {
 
@@ -35,7 +36,19 @@ internal object ApkParserClient {
      *  on a loaded low-end device is not. */
     private const val REPLY_TIMEOUT_MS = 30_000L
 
-    fun parse(ctx: Context, apk: File): ApkParseResult? {
+    /** Result of an isolated-parse round-trip. */
+    sealed interface Outcome {
+        /** The parser answered with facts. */
+        data class Ok(val result: ApkParseResult) : Outcome
+
+        /** The isolated process died / never bound — a parser crash. */
+        data object Died : Outcome
+
+        /** The reply budget ran out before the parser answered. */
+        data object TimedOut : Outcome
+    }
+
+    fun parse(ctx: Context, apk: File): Outcome {
         check(Looper.myLooper() != Looper.getMainLooper()) {
             "ApkParserClient.parse must not run on the main thread"
         }
@@ -83,13 +96,16 @@ internal object ApkParserClient {
             )
             if (!bound) {
                 Diagnostics.error("antivirus.ParserClient", "bindService returned false")
-                return null
+                return Outcome.Died
             }
             if (!latch.await(REPLY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                 Diagnostics.error("antivirus.ParserClient", "isolated parser timed out")
-                return null
+                return Outcome.TimedOut
             }
-            return result.get()
+            // Latch released: either a result arrived, or the service
+            // disconnected / null-bound (a parser crash) with no result set.
+            val r = result.get()
+            return if (r != null) Outcome.Ok(r) else Outcome.Died
         } finally {
             runCatching { appCtx.unbindService(conn) }
             runCatching { pfd.close() }

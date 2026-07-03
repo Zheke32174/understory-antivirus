@@ -10,9 +10,18 @@ import android.os.Parcelable
  * isolated parser holds no policy and the policy code never touches
  * attacker-controlled bytes directly.
  *
- * Manual Parcelable (no kotlin-parcelize) — keeps the wire shape
- * explicit and auditable, which matters for a cross-process boundary
- * whose other side is parsing hostile input.
+ * Manual Parcelable (no kotlin-parcelize) — keeps the wire shape explicit and
+ * auditable, which matters for a cross-process boundary whose other side is
+ * parsing hostile input.
+ *
+ * WIRE VERSION (manual, append-only): fields are written/read in a fixed
+ * order; NEW fields are APPENDED to both [writeToParcel] and [CREATOR] so an
+ * older reader never mis-aligns. v1 = packageName..flags. v2 appended
+ * [servicePermissions] and [receiverPermissions] (the `android:permission`
+ * values of declared `<service>`/`<receiver>` components, for declared-abuse
+ * detection on SAF-scanned APKs). Both sides here are the same build, so v2 is
+ * always symmetric; the append-only rule is the invariant to preserve on any
+ * future change.
  */
 class ApkParseResult(
     val packageName: String?,
@@ -24,6 +33,10 @@ class ApkParseResult(
     val permissions: List<String>,
     /** Structural [FLAG_BAD_ZIP]-style observations, not verdicts. */
     val flags: List<String>,
+    /** `android:permission` of every `<service>` (v2). Empty for old-style. */
+    val servicePermissions: List<String> = emptyList(),
+    /** `android:permission` of every `<receiver>` (v2). */
+    val receiverPermissions: List<String> = emptyList(),
 ) : Parcelable {
 
     override fun describeContents(): Int = 0
@@ -35,6 +48,9 @@ class ApkParseResult(
         dest.writeStringList(certSha256s)
         dest.writeStringList(permissions)
         dest.writeStringList(flags)
+        // --- v2 appended fields ---
+        dest.writeStringList(servicePermissions)
+        dest.writeStringList(receiverPermissions)
     }
 
     companion object {
@@ -45,9 +61,9 @@ class ApkParseResult(
         const val FLAG_BAD_MANIFEST = "bad_manifest"
 
         /**
-         * More than one AndroidManifest.xml entry in the zip — the
-         * classic parser-confusion shape (different parsers pick
-         * different entries). Legitimate build tools never emit this.
+         * More than one AndroidManifest.xml entry in the zip — the classic
+         * parser-confusion shape (different parsers pick different entries).
+         * Legitimate build tools never emit this.
          */
         const val FLAG_DUPLICATE_MANIFEST = "duplicate_manifest"
 
@@ -63,6 +79,9 @@ class ApkParseResult(
                 certSha256s = source.createStringArrayList() ?: emptyList(),
                 permissions = source.createStringArrayList() ?: emptyList(),
                 flags = source.createStringArrayList() ?: emptyList(),
+                // --- v2 appended fields ---
+                servicePermissions = source.createStringArrayList() ?: emptyList(),
+                receiverPermissions = source.createStringArrayList() ?: emptyList(),
             )
 
             override fun newArray(size: Int) = arrayOfNulls<ApkParseResult>(size)

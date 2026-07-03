@@ -4,15 +4,15 @@ import com.understory.security.BaseCapabilityProvider
 
 /**
  * antivirus's capability beacon. Consumers translate
- * `(com.understory.antivirus, version=1)` into [SuiteCapability.REALTIME_SCANNER]
+ * `(com.understory.antivirus, version=1)` into [SuiteCapability.APK_AUDITOR]
  * via their KNOWN_PEERS table.
  *
- * Note on naming: the capability is REALTIME_SCANNER but the MVP is a
- * static / on-demand scanner — APK analysis at install time, file
- * hash check via SAF, installed-app permission audit. Real-time
- * process scanning would require accessibility-service-shape APIs the
- * suite explicitly refuses. The capability name reflects the *role*
- * in the suite, not the literal scanning cadence.
+ * Note on naming: the capability is APK_AUDITOR — an on-demand static APK /
+ * installed-app auditor (SAF APK scan, installed-app posture review, signed
+ * offline deny-list). There is no real-time watcher, receiver, or worker
+ * cadence claimed: rootless real-time process scanning is impossible and the
+ * name never implies it. Periodic re-scan is an in-app opt-in convenience, not
+ * a peer-facing capability.
  */
 class SuiteCapsProvider : BaseCapabilityProvider() {
     override val providedVersion: Int = 1

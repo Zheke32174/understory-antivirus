@@ -122,6 +122,8 @@ internal object RawApkParser {
             certSha256s = certDigests.toList(),
             permissions = manifest?.permissions ?: emptyList(),
             flags = flags,
+            servicePermissions = manifest?.servicePermissions ?: emptyList(),
+            receiverPermissions = manifest?.receiverPermissions ?: emptyList(),
         )
     }
 
@@ -239,6 +241,10 @@ internal object RawApkParser {
         val versionName: String?,
         val versionCode: Long,
         val permissions: List<String>,
+        /** `android:permission` of each `<service>` element. */
+        val servicePermissions: List<String>,
+        /** `android:permission` of each `<receiver>` element. */
+        val receiverPermissions: List<String>,
     )
 
     private const val CHUNK_STRING_POOL = 0x0001
@@ -250,10 +256,14 @@ internal object RawApkParser {
     // by id (with a string-name fallback) survives manifests whose
     // attribute-name strings were stripped by obfuscators.
     private const val RES_ID_NAME = 0x01010003
+    private const val RES_ID_PERMISSION = 0x01010006
     private const val RES_ID_VERSION_CODE = 0x0101021b
     private const val RES_ID_VERSION_NAME = 0x0101021c
 
     private const val TYPE_STRING = 0x03
+
+    /** Defensive cap on collected component-permission strings. */
+    private const val MAX_COMPONENT_PERMS = 256
 
     private fun parseBinaryManifest(m: ByteArray): AxmlManifest {
         require(m.size >= 8 && u16(m, 0) == CHUNK_XML) { "not binary XML" }
@@ -264,6 +274,8 @@ internal object RawApkParser {
         var versionName: String? = null
         var versionCode = 0L
         val permissions = mutableListOf<String>()
+        val servicePermissions = mutableListOf<String>()
+        val receiverPermissions = mutableListOf<String>()
 
         while (pos + 8 <= m.size) {
             val chunkType = u16(m, pos)
@@ -290,7 +302,9 @@ internal object RawApkParser {
                     val isManifest = elemName == "manifest"
                     val isPermission = elemName == "uses-permission" ||
                         elemName == "uses-permission-sdk-23"
-                    if (isManifest || isPermission) {
+                    val isService = elemName == "service"
+                    val isReceiver = elemName == "receiver"
+                    if (isManifest || isPermission || isService || isReceiver) {
                         require(attrSize >= 20) { "bad attribute size" }
                         for (i in 0 until attrCount) {
                             val a = ext + attrStart + i * attrSize
@@ -315,6 +329,18 @@ internal object RawApkParser {
                                     versionName = stringValue
                                 isPermission && (resId == RES_ID_NAME || attrName == "name") ->
                                     stringValue?.let { permissions += it }
+                                isService && (resId == RES_ID_PERMISSION || attrName == "permission") ->
+                                    stringValue?.let {
+                                        if (servicePermissions.size < MAX_COMPONENT_PERMS) {
+                                            servicePermissions += it
+                                        }
+                                    }
+                                isReceiver && (resId == RES_ID_PERMISSION || attrName == "permission") ->
+                                    stringValue?.let {
+                                        if (receiverPermissions.size < MAX_COMPONENT_PERMS) {
+                                            receiverPermissions += it
+                                        }
+                                    }
                             }
                         }
                     }
@@ -327,6 +353,8 @@ internal object RawApkParser {
             versionName = versionName,
             versionCode = versionCode,
             permissions = permissions,
+            servicePermissions = servicePermissions,
+            receiverPermissions = receiverPermissions,
         )
     }
 

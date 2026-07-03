@@ -1,4 +1,79 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  App-specific copy for Understory APK Check. Shared common-security strings
+  (cd_*, state_*, action_*, msg_*) live in common-security/res/values/strings.xml.
+  Keep copy HONEST: describe only shipped mechanisms; never "replace Play Protect".
+-->
 <resources>
-    <string name="app_name">antivirus</string>
+    <!-- Store-facing display name (D-decision §0). Package id stays com.understory.antivirus. -->
+    <string name="app_name">Understory APK Check</string>
+
+    <!-- Positioning (§0) -->
+    <string name="av_positioning">Works alongside Google Play Protect. Play Protect checks apps against Google\'s cloud at install time; APK Check inspects sideloaded APKs and what your installed apps can do — offline, on your device, showing its work.</string>
+
+    <!-- Home "what this catches" (§1.6) — reflects exactly the shipped mechanisms. -->
+    <string name="av_home_catches">What this catches: a signed offline deny-list (Lucky-Patcher-family and known repackager signing certs; import more via a signed file), permission-shape heuristics, hidden-from-launcher detection, and abuser enumeration for accessibility / device-admin / notification-listener — including which are enabled right now. What it doesn\'t: novel zero-days or running-process behavior. Treat findings as advisory, not verdicts.</string>
+
+    <!-- Home actions -->
+    <string name="av_scan_apk">Scan an APK file</string>
+    <string name="av_audit_installed">Audit installed apps</string>
+    <string name="av_diagnostics">Diagnostics</string>
+    <string name="av_import_defs">Import definitions</string>
+
+    <!-- Definitions status (§1.5) -->
+    <string name="av_defs_seed">Definitions: built-in seed (serial %1$d)</string>
+    <string name="av_defs_imported">Definitions: imported serial %1$d, %2$s</string>
+    <string name="av_defs_counts">%1$d app-hashes + %2$d cert-hashes</string>
+    <string name="av_defs_updated">Definitions updated — serial %1$d, issued %2$s, %3$s.</string>
+    <string name="av_defs_bad">This file isn\'t a valid signed Understory definitions file (signature check failed). Nothing was imported.</string>
+    <string name="av_defs_older">These definitions (serial %1$d) are older than what\'s installed (serial %2$d). Import anyway?</string>
+    <string name="av_defs_import_anyway">Import older anyway</string>
+
+    <!-- Play Protect card (§3) -->
+    <string name="av_pp_open">Open Play Protect</string>
+    <string name="av_pp_unreachable">Play Protect settings not reachable on this device</string>
+
+    <!-- Tamper card / block screen (§6/§7) -->
+    <string name="av_tamper_title">Device tooling detected</string>
+    <string name="av_tamper_block_title">APK Check can\'t run safely</string>
+    <string name="av_tamper_block_reason">The scanner itself may be tampered with, so its results can\'t be trusted (%1$s). Reinstall APK Check from a trusted source.</string>
+    <string name="av_tamper_block_close">Close</string>
+
+    <!-- Periodic scan (§5.2) -->
+    <string name="av_periodic_label">Periodically re-check installed apps</string>
+    <string name="av_periodic_sub_off">Off — no background work runs.</string>
+    <string name="av_periodic_sub_on">Every 6 hours: new or updated apps are re-checked in the background.</string>
+    <string name="av_periodic_alerts_off">Alerts off (notification permission not granted) — results still appear here.</string>
+
+    <!-- Periodic-scan notification -->
+    <string name="av_notif_channel">App scan alerts</string>
+    <string name="av_notif_title">A newly installed or updated app was flagged</string>
+    <string name="av_notif_one">%1$s has a risky posture. Tap to review.</string>
+    <string name="av_notif_many">%1$d apps have a risky posture. Tap to review.</string>
+
+    <!-- Scan APK screen -->
+    <string name="av_scan_title">Scan APK</string>
+    <string name="av_scan_pick">Pick APK file</string>
+    <string name="av_scanning">Scanning…</string>
+
+    <!-- Audit installed screen -->
+    <string name="av_audit_title">Audit installed apps</string>
+    <string name="av_audit_intro">Scans your installed user apps for risky permission combinations, declared and currently-enabled abusers, hidden launchers, and deny-list matches. System apps you can\'t uninstall are skipped. Give it a moment on devices with many apps.</string>
+    <string name="av_audit_run">Run audit</string>
+    <string name="av_audit_rerun">Re-run audit</string>
+    <string name="av_auditing_progress">Checking %1$d of %2$d apps…</string>
+    <string name="av_audit_flagged_count">%1$d app(s) flagged. Tap an entry for details.</string>
+    <string name="av_audit_clean_title">No apps flagged</string>
+    <string name="av_audit_clean_body">Nothing here has a risky permission shape, an enabled abuser, a hidden launcher, or matches the deny-list.</string>
+    <string name="av_audit_details">Details</string>
+    <string name="av_audit_back_to_list">Back to list</string>
+
+    <!-- Findings / report -->
+    <string name="av_fix_in_settings">Fix in Settings</string>
+    <string name="av_no_findings">No risky permission patterns detected.</string>
+    <string name="av_findings">Findings:</string>
+    <string name="av_apk_not_hashed">(not hashed — no APK-hash definitions loaded)</string>
+
+    <!-- Generic -->
+    <string name="av_back">Back</string>
 </resources>

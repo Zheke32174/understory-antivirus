@@ -13,27 +13,23 @@ import java.security.MessageDigest
  * Static analysis for APKs and installed apps.
  *
  * Two entry points:
- *   - [analyzeUri]: user picks an APK file via SAF; we copy it to
- *     cache (hashing as we go), hand a read-only fd to the isolated
- *     ApkParserService for the actual parsing (ZIP / manifest / cert
- *     extraction — the CVE-prone part), then interpret the returned
- *     facts against KnownBad + RiskRules here. Cache file is deleted
- *     after. A parser crash on a malformed APK is contained to the
- *     isolated process and reported as a SUSPICIOUS result.
- *   - [analyzeInstalled]: walk PackageManager-visible installed apps
- *     and run the same analysis on each, surfacing only those with
- *     CRITICAL or HIGH findings to keep the output focused. Installed
- *     apps stay on the PackageManager path — the system already parsed
- *     them at install time, so there are no untrusted bytes to isolate.
+ *   - [analyzeUri]: user picks an APK file via SAF; we copy it to cache
+ *     (hashing as we go), hand a read-only fd to the isolated ApkParserService
+ *     for the actual parsing (ZIP / manifest / cert extraction — the CVE-prone
+ *     part), then interpret the returned facts against KnownBad + RiskRules
+ *     here. Cache file is deleted after. A parser crash on a malformed APK is
+ *     contained to the isolated process and reported as a SUSPICIOUS result; a
+ *     timeout is reported as UNKNOWN, not suspicious.
+ *   - [analyzeInstalled] / [auditInstalled]: walk PackageManager-visible
+ *     installed apps and run the same analysis on each. Installed apps stay on
+ *     the PackageManager path — the system already parsed them at install time,
+ *     so there are no untrusted bytes to isolate — and we additionally read
+ *     their declared components (accessibility / device-admin / notif-listener)
+ *     and cross-reference the device-wide currently-enabled abuser set.
  *
- * What we DON'T do (rootless limits):
- *   - Real-time process monitoring (would need root or accessibility,
- *     refused).
- *   - Memory scanning of running apps (root-only).
- *   - Behavioral analysis (root-only).
- *
- * The MVP is a *static* scanner. That's intentionally bounded; phase 2
- * adds richer rule sets but doesn't escalate.
+ * What we DON'T do (rootless limits): real-time process monitoring, memory
+ * scanning, or behavioral analysis — all need root or accessibility, which the
+ * suite refuses. This is a bounded static + posture auditor, on purpose.
  */
 object ApkAnalyzer {
 
@@ -47,31 +43,24 @@ object ApkAnalyzer {
         val packageName: String,
         val versionName: String?,
         val versionCode: Long,
-        val apkSha256: String,
+        /** null = the APK was not hashed (no APK-hash definitions loaded). */
+        val apkSha256: String?,
         val certSha256: String?,
         val findings: List<RiskRules.Finding>,
         val notes: List<String>,
-    ) {
-        /** A short single-line summary for the UI list. */
-        val summary: String
-            get() {
-                val sev = findings.firstOrNull()?.severity?.name ?: "no findings"
-                return "$packageName — $verdict ($sev)"
-            }
-    }
+    )
 
     /**
-     * Analyze a SAF-picked APK. Caller already has read permission for
-     * the URI; we copy it to cache because the isolated parser needs a
-     * seekable fd and SAF streams from cloud providers are often pipes.
-     * SHA-256 is computed during the copy (trusted fixed-function code,
-     * safe to run here). The cache file is deleted in a finally block
-     * so we don't leak APK bytes on disk.
+     * Analyze a SAF-picked APK. Caller already has read permission for the
+     * URI; we copy it to cache because the isolated parser needs a seekable fd
+     * and SAF streams from cloud providers are often pipes. SHA-256 is computed
+     * during the copy (trusted fixed-function code). The cache file is deleted
+     * in a finally block so we don't leak APK bytes on disk.
      *
-     * Must be called off the main thread (it already is — the scan
-     * screen runs it on Dispatchers.IO); ApkParserClient enforces that.
+     * Must be called off the main thread.
      */
     fun analyzeUri(ctx: Context, uri: Uri): Report {
+        BlocklistStore.ensureLoaded(ctx)
         val cache = File(ctx.cacheDir, "av-scan-${System.nanoTime()}.apk")
         try {
             val md = MessageDigest.getInstance("SHA-256")
@@ -92,6 +81,8 @@ object ApkAnalyzer {
                     }
                 }
             }
+            // Single-file SAF scan always hashes — the hash is shown to the
+            // user as evidence, and it's one file, not a whole-device pass.
             val apkSha = md.digest().joinToString("") { "%02x".format(it) }
             return reportFromIsolatedParse(ApkParserClient.parse(ctx, cache), apkSha)
         } finally {
@@ -102,12 +93,15 @@ object ApkAnalyzer {
     /**
      * Analyze a single installed app by package name.
      */
-    fun analyzeInstalled(ctx: Context, packageName: String): Report? {
+    fun analyzeInstalled(ctx: Context, packageName: String, enabled: EnabledAbusers.Snapshot): Report? {
         val pm = ctx.packageManager
         val info = try {
             pm.getPackageInfo(
                 packageName,
-                PackageManager.GET_PERMISSIONS or PackageManager.GET_SIGNING_CERTIFICATES,
+                PackageManager.GET_PERMISSIONS or
+                    PackageManager.GET_SIGNING_CERTIFICATES or
+                    PackageManager.GET_SERVICES or
+                    PackageManager.GET_RECEIVERS,
             )
         } catch (_: PackageManager.NameNotFoundException) {
             return null
@@ -115,48 +109,79 @@ object ApkAnalyzer {
         val applicationInfo = info.applicationInfo
         val apkPath = applicationInfo?.sourceDir ?: return null
         val apkFile = File(apkPath)
-        return analyzeFromPackageInfo(ctx, info, apkFile)
+        return analyzeFromPackageInfo(ctx, info, apkFile, enabled)
     }
 
     /**
-     * Walk every PackageManager-visible installed app and return reports
-     * for those with at least one finding. Results are sorted with the
-     * most-severe at the top.
+     * Walk every PackageManager-visible installed app and return reports for
+     * those with at least one finding (or a KNOWN_BAD verdict). Results are
+     * sorted most-severe-first (KNOWN_BAD pinned top).
+     *
+     * @param onProgress invoked per package scanned (done, total) so the UI can
+     *   render a determinate progress bar. Runs on the calling thread.
      */
-    fun auditInstalled(ctx: Context): List<Report> {
+    fun auditInstalled(ctx: Context, onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }): List<Report> {
+        BlocklistStore.ensureLoaded(ctx)
+        val enabled = EnabledAbusers.snapshot(ctx)
         val pm = ctx.packageManager
         val all = pm.getInstalledApplications(0)
-        val reports = mutableListOf<Report>()
-        for (app in all) {
-            // Skip system apps the user can't uninstall — they pollute
-            // the list with permissions the user can't act on. Still
-            // include user-installed-OEM-bundled apps (FLAG_UPDATED_SYSTEM_APP).
+        val candidates = all.filter { app ->
+            // Skip system apps the user can't uninstall — they pollute the list
+            // with permissions the user can't act on. Still include
+            // user-installed-OEM-bundled apps (FLAG_UPDATED_SYSTEM_APP).
             val isSystem = (app.flags and ApplicationInfo.FLAG_SYSTEM) != 0
             val isUpdatedSystem = (app.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
-            if (isSystem && !isUpdatedSystem) continue
-
-            val report = analyzeInstalled(ctx, app.packageName) ?: continue
-            if (report.findings.isNotEmpty() || report.verdict == Verdict.KNOWN_BAD) {
+            !isSystem || isUpdatedSystem
+        }
+        val total = candidates.size
+        val reports = mutableListOf<Report>()
+        candidates.forEachIndexed { i, app ->
+            val report = analyzeInstalled(ctx, app.packageName, enabled)
+            if (report != null && (report.findings.isNotEmpty() || report.verdict == Verdict.KNOWN_BAD)) {
                 reports += report
             }
+            onProgress(i + 1, total)
         }
-        return reports.sortedWith(
-            compareByDescending<Report> {
-                if (it.verdict == Verdict.KNOWN_BAD) 100
-                else it.findings.firstOrNull()?.severity?.ordinal ?: -1
-            }.thenBy { it.packageName },
-        )
+        return rankReports(reports)
     }
 
     /**
-     * Turn the isolated parser's raw facts into a Report. null means
-     * the parser process died (or never answered) — per the threat
-     * model that's a *finding*: legitimate APKs don't crash parsers,
-     * malformed-on-purpose ones do.
+     * Rank reports for the audit list: KNOWN_BAD pinned top, then most-severe
+     * first (findings are already CRITICAL-first, so the first finding is the
+     * most severe). Alphabetical within a tier. Extracted as a pure helper so
+     * the ordering is unit-testable (locks D#1 in the list path).
      */
-    private fun reportFromIsolatedParse(parsed: ApkParseResult?, apkSha: String): Report {
-        if (parsed == null) {
-            return Report(
+    fun rankReports(reports: List<Report>): List<Report> =
+        reports.sortedWith(
+            compareBy<Report> {
+                if (it.verdict == Verdict.KNOWN_BAD) -1
+                else it.findings.firstOrNull()?.severity?.ordinal ?: Int.MAX_VALUE
+            }.thenBy { it.packageName },
+        )
+
+    /**
+     * Turn the isolated parser's [ApkParserClient.Outcome] into a Report.
+     *   - TimedOut → UNKNOWN (large file / busy device, NOT a maliciousness
+     *     signal). A false SUSPICIOUS on a slow-but-clean file erodes trust.
+     *   - Died → SUSPICIOUS (a parser that CRASHED on malformed input is the
+     *     real signal — legitimate APKs don't crash parsers, crafted ones do).
+     */
+    private fun reportFromIsolatedParse(outcome: ApkParserClient.Outcome, apkSha: String): Report {
+        when (outcome) {
+            is ApkParserClient.Outcome.TimedOut -> return Report(
+                verdict = Verdict.UNKNOWN,
+                packageName = "(scan timed out)",
+                versionName = null,
+                versionCode = 0,
+                apkSha256 = apkSha,
+                certSha256 = null,
+                findings = emptyList(),
+                notes = listOf(
+                    "The scan timed out — the file is large or the device is busy. " +
+                        "This doesn't mean it's malicious. Try again.",
+                ),
+            )
+            is ApkParserClient.Outcome.Died -> return Report(
                 verdict = Verdict.SUSPICIOUS,
                 packageName = "(parser crashed)",
                 versionName = null,
@@ -171,7 +196,10 @@ object ApkAnalyzer {
                         "sandboxed process with no permissions; this app is fine.",
                 ),
             )
+            is ApkParserClient.Outcome.Ok -> Unit // fall through
         }
+        val parsed = (outcome as ApkParserClient.Outcome.Ok).result
+
         if (ApkParseResult.FLAG_BAD_ZIP in parsed.flags ||
             ApkParseResult.FLAG_BAD_MANIFEST in parsed.flags
         ) {
@@ -186,7 +214,15 @@ object ApkAnalyzer {
                 notes = listOf("Couldn't parse the APK; likely corrupt or malformed."),
             )
         }
-        val findings = RiskRules.analyze(parsed.permissions.toSet())
+        val permSet = parsed.permissions.toSet()
+        val findings = (
+            RiskRules.analyze(permSet) +
+                RiskRules.analyzeComponents(
+                    parsed.servicePermissions,
+                    parsed.receiverPermissions,
+                    permSet,
+                )
+            ).sortedBy { it.severity.ordinal }
         val notes = mutableListOf<String>()
         val dupManifest = ApkParseResult.FLAG_DUPLICATE_MANIFEST in parsed.flags
         if (dupManifest) {
@@ -199,11 +235,12 @@ object ApkAnalyzer {
         }
         val verdict = when {
             KnownBad.isKnownBadApk(apkSha) -> {
-                notes += "APK hash matches the built-in deny-list."
+                notes += knownBadNote(apkSha, "APK hash")
                 Verdict.KNOWN_BAD
             }
             parsed.certSha256s.any { KnownBad.isKnownBadCert(it) } -> {
-                notes += "Signing cert matches the built-in deny-list."
+                val hit = parsed.certSha256s.first { KnownBad.isKnownBadCert(it) }
+                notes += knownBadNote(hit, "Signing cert")
                 Verdict.KNOWN_BAD
             }
             dupManifest -> Verdict.SUSPICIOUS
@@ -224,34 +261,36 @@ object ApkAnalyzer {
     }
 
     /**
-     * Installed-app analysis. Only reached from [analyzeInstalled] —
-     * the data comes from PackageManager (parsed by the system at
-     * install time), never from untrusted APK bytes; those go through
-     * the isolated parser instead.
+     * Installed-app analysis. The data comes from PackageManager (parsed by the
+     * system at install time), never from untrusted APK bytes.
      */
     private fun analyzeFromPackageInfo(
         ctx: Context,
         info: PackageInfo,
         apkFile: File,
+        enabled: EnabledAbusers.Snapshot,
     ): Report {
-        val apkSha = sha256(apkFile)
-        val certSha = signingCertSha256(info)
         val perms = info.requestedPermissions?.toSet() ?: emptySet()
-        val findings = RiskRules.analyze(perms).toMutableList()
+        val pkg = info.packageName
 
-        // Hidden-launcher detection (Trustd-style): user-installed apps with
-        // no launcher entry are invisible from the app drawer. Some legitimate
-        // cases (services, plugins, background utilities) but textbook
-        // stalkerware property — hiding from the target.
+        // Declared-component abuse (a11y / device-admin / notif-listener) —
+        // read off the components, the CORRECT input.
+        val servicePerms = info.services?.mapNotNull { it.permission } ?: emptyList()
+        val receiverPerms = info.receivers?.mapNotNull { it.permission } ?: emptyList()
+
+        val findings = (
+            RiskRules.analyze(perms) +
+                RiskRules.analyzeComponents(servicePerms, receiverPerms, perms) +
+                enabledAbuserFindings(pkg, enabled)
+            ).toMutableList()
+
+        // Hidden-launcher detection (stalkerware-style): user-installed apps
+        // with no launcher entry are invisible from the app drawer.
         run {
-            val pkg = info.packageName
             val applicationInfo = info.applicationInfo
             if (pkg != null && applicationInfo != null) {
                 val isSystem = (applicationInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
                 val isUpdatedSystem = (applicationInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
-                // System apps without launchers are normal (services /
-                // background components). Only flag user-installed (or
-                // updated-system, which the user actively interacts with).
                 if (!isSystem || isUpdatedSystem) {
                     val hasLauncher = try {
                         ctx.packageManager.getLaunchIntentForPackage(pkg) != null
@@ -260,7 +299,6 @@ object ApkAnalyzer {
                     }
                     if (!hasLauncher) {
                         findings.add(
-                            0,
                             RiskRules.Finding(
                                 severity = RiskRules.Severity.HIGH,
                                 title = "No launcher icon",
@@ -278,19 +316,25 @@ object ApkAnalyzer {
             }
         }
 
+        findings.sortBy { it.severity.ordinal }
+
+        // Cert digest is cheap (one already-parsed cert) — always computed.
+        val certSha = signingCertSha256(info)
+        // APK hash is only paid when APK-hash definitions can actually match.
+        val apkSha = if (BlocklistStore.apkHashes().isNotEmpty()) sha256(apkFile) else null
+
         val notes = mutableListOf<String>()
         val verdict = when {
             apkSha != null && KnownBad.isKnownBadApk(apkSha) -> {
-                notes += "APK hash matches the built-in deny-list."
+                notes += knownBadNote(apkSha, "APK hash")
                 Verdict.KNOWN_BAD
             }
             certSha != null && KnownBad.isKnownBadCert(certSha) -> {
-                notes += "Signing cert matches the built-in deny-list."
+                notes += knownBadNote(certSha, "Signing cert")
                 Verdict.KNOWN_BAD
             }
             findings.any { it.severity == RiskRules.Severity.CRITICAL } -> Verdict.SUSPICIOUS
             findings.any { it.severity == RiskRules.Severity.HIGH } -> Verdict.SUSPICIOUS
-            findings.isEmpty() -> Verdict.CLEAN
             else -> Verdict.CLEAN
         }
         @Suppress("DEPRECATION")
@@ -300,10 +344,10 @@ object ApkAnalyzer {
 
         return Report(
             verdict = verdict,
-            packageName = info.packageName ?: "(unknown)",
+            packageName = pkg ?: "(unknown)",
             versionName = info.versionName,
             versionCode = versionCode,
-            apkSha256 = apkSha ?: "(unhashable)",
+            apkSha256 = apkSha,
             certSha256 = certSha,
             findings = findings,
             notes = notes,
@@ -311,8 +355,60 @@ object ApkAnalyzer {
     }
 
     /**
-     * SHA-256 of the APK bytes. Returns null on read failure.
+     * Currently-enabled abuser findings — the strongest signal (the app is
+     * exercising the power right now). Each carries a "Fix in Settings" revoke
+     * deep-link.
      */
+    private fun enabledAbuserFindings(
+        pkg: String?,
+        enabled: EnabledAbusers.Snapshot,
+    ): List<RiskRules.Finding> {
+        if (pkg == null) return emptyList()
+        val out = mutableListOf<RiskRules.Finding>()
+        if (pkg in enabled.enabledAccessibility) {
+            out += RiskRules.Finding(
+                severity = RiskRules.Severity.CRITICAL,
+                title = "Accessibility service is ENABLED right now",
+                explain = "This app's accessibility service is currently enabled — it can " +
+                    "read everything on your screen and act as you right now. If you didn't " +
+                    "turn this on for a reason you recognize, revoke it.",
+                deepLink = SettingsDeepLinks.Target.ACCESSIBILITY,
+            )
+        }
+        if (pkg in enabled.activeDeviceAdmins) {
+            out += RiskRules.Finding(
+                severity = RiskRules.Severity.CRITICAL,
+                title = "Active device administrator right now",
+                explain = "This app is currently an active device administrator — it can " +
+                    "lock or wipe the device and resist uninstall. Revoke it unless it's an " +
+                    "MDM / work profile you recognize.",
+                deepLink = SettingsDeepLinks.Target.DEVICE_ADMIN,
+            )
+        }
+        if (pkg in enabled.enabledNotificationListeners) {
+            out += RiskRules.Finding(
+                severity = RiskRules.Severity.HIGH,
+                title = "Reading all your notifications right now",
+                explain = "This app currently has notification access — it can read the " +
+                    "content of every notification, including one-time codes and message " +
+                    "previews. Revoke it unless you recognize why it needs this.",
+                deepLink = SettingsDeepLinks.Target.NOTIFICATION_LISTENER,
+            )
+        }
+        return out
+    }
+
+    /** Legible KNOWN_BAD note, naming the matched definition label when known. */
+    private fun knownBadNote(hash: String, kind: String): String {
+        val label = KnownBad.labelFor(hash)
+        return if (label != null) {
+            "$kind matches the deny-list: $label."
+        } else {
+            "$kind matches the deny-list."
+        }
+    }
+
+    /** SHA-256 of the APK bytes. Returns null on read failure. */
     private fun sha256(file: File): String? = runCatching {
         val md = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
@@ -328,9 +424,8 @@ object ApkAnalyzer {
 
     /**
      * SHA-256 of the first apkContentsSigners certificate. Matches the
-     * Tamper.kt / SuiteAttestation.kt approach — we explicitly use
-     * apkContentsSigners (not signingCertificateHistory) so rotated-out
-     * certs don't satisfy a deny-list match.
+     * Tamper.kt / SuiteAttestation.kt approach — apkContentsSigners (not
+     * signingCertificateHistory) so rotated-out certs don't satisfy a match.
      */
     private fun signingCertSha256(info: PackageInfo): String? {
         val signingInfo = info.signingInfo ?: return null
