@@ -64,6 +64,13 @@ object ApkAnalyzer {
         val installSource: InstallSource? = null,
         /** The app's declared permissions, for the grouped permission list. */
         val permissions: List<String> = emptyList(),
+        /**
+         * Precise inputs for the elevated CONTAINMENT controls (quarantine,
+         * appops revoke, de-admin, wipe, disable-component). Present ONLY on the
+         * installed-app path (a SAF-scanned raw APK isn't installed, so it stays
+         * null and those controls never render). See [ContainmentFacts].
+         */
+        val containment: ContainmentFacts? = null,
     )
 
     /**
@@ -441,8 +448,71 @@ object ApkAnalyzer {
             risk = RiskRules.score(findings, knownBad = verdict == Verdict.KNOWN_BAD),
             installSource = installSource,
             permissions = perms.toList().sorted(),
+            containment = if (pkg != null) buildContainment(ctx, pkg, perms, enabled) else null,
         )
     }
+
+    /**
+     * Build the precise containment inputs for one installed app from the facts
+     * we already have (declared permissions + the live abuser snapshot). Pure
+     * assembly — no privileged calls here; the elevated ops run later, gated on
+     * the user's granted tier. Protected packages ([ContainmentFacts.isProtected])
+     * still get a facts object (so the UI can say "excluded"), but with an empty
+     * control set.
+     */
+    private fun buildContainment(
+        ctx: Context,
+        pkg: String,
+        perms: Set<String>,
+        enabled: EnabledAbusers.Snapshot,
+    ): ContainmentFacts {
+        val protectedPkg = ContainmentFacts.isProtected(pkg, launcherPackage(ctx))
+
+        val adminComponents = enabled.deviceAdminComponents[pkg].orEmpty()
+            .map { it.flattenToString() }
+        val disableTargets = buildList {
+            enabled.accessibilityComponents[pkg].orEmpty().forEach {
+                add(ContainmentFacts.DisableTarget(it.flattenToString(), ContainmentFacts.DisableTarget.Kind.ACCESSIBILITY))
+            }
+            enabled.notificationListenerComponents[pkg].orEmpty().forEach {
+                add(
+                    ContainmentFacts.DisableTarget(
+                        it.flattenToString(),
+                        ContainmentFacts.DisableTarget.Kind.NOTIFICATION_LISTENER,
+                    ),
+                )
+            }
+            enabled.deviceAdminComponents[pkg].orEmpty().forEach {
+                add(ContainmentFacts.DisableTarget(it.flattenToString(), ContainmentFacts.DisableTarget.Kind.DEVICE_ADMIN))
+            }
+        }
+
+        return ContainmentFacts(
+            packageName = pkg,
+            revocableDangerousPerms = if (protectedPkg) emptyList()
+            else PermissionGroups.revocableDangerous(perms.toList()),
+            hasOverlayPermission = !protectedPkg &&
+                "android.permission.SYSTEM_ALERT_WINDOW" in perms,
+            hasUsageStatsPermission = !protectedPkg &&
+                "android.permission.PACKAGE_USAGE_STATS" in perms,
+            activeDeviceAdminComponents = if (protectedPkg) emptyList() else adminComponents,
+            disableTargets = if (protectedPkg) emptyList() else disableTargets,
+            suiteSibling = protectedPkg,
+        )
+    }
+
+    /**
+     * The current default home/launcher package, resolved via the HOME intent.
+     * Used only to exclude the launcher from every containment action (a bricked
+     * launcher is unrecoverable rootless). Null on failure — the exclusion then
+     * relies on the exact-package + suite-prefix checks alone.
+     */
+    private fun launcherPackage(ctx: Context): String? = runCatching {
+        val intent = android.content.Intent(android.content.Intent.ACTION_MAIN)
+            .addCategory(android.content.Intent.CATEGORY_HOME)
+        ctx.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            ?.activityInfo?.packageName
+    }.getOrNull()
 
     /**
      * Currently-enabled abuser findings — the strongest signal (the app is

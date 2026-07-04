@@ -681,6 +681,12 @@ internal fun AppActionsCard(report: ApkAnalyzer.Report) {
     // otherwise this is a no-op and the rootless deep-links below stand alone.
     ElevatedActionsSection(report)
 
+    // Elevated CONTAINMENT (quarantine / appops-revoke / de-admin / wipe /
+    // disable-component). Gated on canRunShell and on this app actually having a
+    // control that applies; otherwise renders nothing or an honest locked/excluded
+    // note. Reversible-first; destructive ops are hold-to-confirm.
+    ContainmentSection(report)
+
     SuiteCard {
         Text(
             stringResource(R.string.av_actions_title),

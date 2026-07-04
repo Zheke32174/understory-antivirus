@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copy for the elevated CONTAINMENT controls (ContainmentActions.kt): one-tap
+  quarantine + release, special-access appops revoke/undo, neutralise device
+  admin, wipe app data, and disable a specific flagged component. Every string is
+  HONEST about what the action does, its reversibility, and its limits. These
+  controls only render when the user granted elevation (Shizuku) AND the action
+  applies to the flagged app; otherwise the section shows a locked/excluded note.
+-->
+<resources>
+    <!-- Section chrome -->
+    <string name="av_contain_title">Contain this app</string>
+    <string name="av_contain_sub">Uses the elevation access you granted to make this app safe right now. Reversible steps first; destructive ones ask you to hold to confirm.</string>
+    <string name="av_contain_locked">Containment needs the optional elevation you haven\'t granted yet. Open the Definitions tab to grant Shizuku access, then these controls light up. Until then, use the Settings deep-links below.</string>
+    <string name="av_contain_excluded">%1$s is a protected package (a launcher, system settings, Tailscale, the Shizuku manager, or an Understory suite app), so containment actions are deliberately excluded. Nothing was changed.</string>
+
+    <!-- Feature 1: quarantine + release + network route -->
+    <string name="av_contain_quarantine">Quarantine (stop, suspend, revoke perms, block overlay/usage)</string>
+    <string name="av_contain_release">Release from quarantine (un-suspend, restore overlay/usage)</string>
+    <string name="av_contain_network">Restrict network in the firewall app</string>
+
+    <!-- Feature 2: special-access appops -->
+    <string name="av_contain_appops_ignore">Revoke overlay / usage access</string>
+    <string name="av_contain_appops_default">Undo — restore overlay / usage access to default</string>
+
+    <!-- Feature 3: neutralise device admin -->
+    <string name="av_contain_deadmin">Neutralise device admin (then you can uninstall)</string>
+
+    <!-- Feature 4: wipe app data -->
+    <string name="av_contain_wipe">Wipe app data</string>
+    <string name="av_contain_wipe_confirm_title">Wipe this app\'s data?</string>
+    <string name="av_contain_wipe_confirm_body">This resets %1$s to a first-install state using the elevation access you granted — cached tokens, exfiltration sessions, and any accessibility/overlay setup are cleared. The app stays installed. This can\'t be undone. Hold to confirm.</string>
+
+    <!-- Feature 5: disable a specific flagged component -->
+    <string name="av_contain_disable_component">Disable this %1$s component</string>
+    <string name="av_contain_disable_confirm_title">Disable this component?</string>
+    <string name="av_contain_disable_confirm_body">This disables the %1$s component %2$s while leaving the rest of the app installed. It\'s reversible (re-enable it the same way), but an app update or a reboot can turn it back on.</string>
+    <string name="av_contain_disable_confirm_action">Disable component</string>
+
+    <!-- Component-kind labels -->
+    <string name="av_contain_kind_a11y">accessibility service</string>
+    <string name="av_contain_kind_notif">notification listener</string>
+    <string name="av_contain_kind_admin">device-admin receiver</string>
+
+    <!-- Per-step labels (used inside the result list) -->
+    <string name="av_contain_step_forcestop">Force stop</string>
+    <string name="av_contain_step_suspend">Suspend</string>
+    <string name="av_contain_step_unsuspend">Un-suspend</string>
+    <string name="av_contain_step_revoke">Revoke %1$s</string>
+    <string name="av_contain_step_appop">Block %1$s (appops ignore)</string>
+    <string name="av_contain_step_appop_default">Restore %1$s (appops default)</string>
+    <string name="av_contain_step_deadmin">Remove device admin %1$s</string>
+    <string name="av_contain_step_disable">Disable component</string>
+    <string name="av_contain_step_wipe">Wipe app data</string>
+
+    <!-- Per-step honest outcome tails -->
+    <string name="av_contain_step_ok">%1$s — done.</string>
+    <string name="av_contain_step_unsupported">%1$s — not supported: %2$s</string>
+    <string name="av_contain_step_failed">%1$s — failed: %2$s</string>
+</resources>
