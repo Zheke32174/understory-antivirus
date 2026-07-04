@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copy for the READ-ONLY "Verified (elevated)" ground-truth section on a flagged
+  app's detail screen (DeepFacts.kt / DeepFactsCard.kt). When the user has granted
+  the optional Shizuku elevation, two read-only shell reads upgrade the static
+  manifest "requests" list into what the app ACTUALLY has: granted runtime
+  permissions, live appop modes, first-install time, and installer. Honest by
+  construction — this section only appears when a real value was read; on any
+  degrade (no elevation, read null, or a dump-format drift) it renders nothing and
+  the static "requests" view stands alone. No action is taken here; it is read-only.
+-->
+<resources>
+    <!-- Section chrome -->
+    <string name="av_deep_title">Verified (elevated)</string>
+    <string name="av_deep_sub">Read with the optional elevation you granted — this is what the app actually has right now, not just what its manifest requests. Read-only; nothing was changed.</string>
+
+    <!-- Provenance -->
+    <string name="av_deep_first_install">Installed:</string>
+    <string name="av_deep_installer">Installer:</string>
+
+    <!-- Runtime-permission ground truth -->
+    <string name="av_deep_granted">Granted dangerous permissions (%1$d)</string>
+    <string name="av_deep_denied">Requested but not granted (%1$d)</string>
+
+    <!-- Live appop modes -->
+    <string name="av_deep_appops">Active special-access modes (%1$d)</string>
+    <string name="av_deep_appop_row">%1$s = %2$s</string>
+</resources>

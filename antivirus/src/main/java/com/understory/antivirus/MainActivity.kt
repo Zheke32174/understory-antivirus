@@ -690,6 +690,14 @@ private fun AuditDetail(
             SuiteSectionHeader(stringResource(R.string.av_section_permissions))
             PermissionGroupsCard(report.permissions)
         }
+        // Ground-truth enrichment (READ-ONLY): when the user granted elevation,
+        // upgrade the static "requests" view above with what the app ACTUALLY has
+        // (granted runtime perms, live appops, install provenance). Installed apps
+        // only — a SAF-scanned raw APK isn't installed, so there's nothing to read.
+        // Fails OPEN: renders nothing on no-elevation / read-null / parse-miss.
+        if (report.installSource != null && report.packageName.contains('.')) {
+            VerifiedFactsSection(report)
+        }
         // "Take action" deep-links — installed apps only (a SAF-scanned raw APK
         // isn't installed, so there's no App-Info screen to open).
         if (report.installSource != null && report.packageName.contains('.')) {
