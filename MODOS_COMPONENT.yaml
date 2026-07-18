@@ -1,0 +1,38 @@
+apiVersion: modos.pleiades/v1alpha1
+kind: Component
+metadata:
+  name: understory-mobile-antivirus
+  repository: Zheke32174/understory-antivirus
+  visibility: public
+  lifecycle: experimental
+  defaultBranch: main
+spec:
+  roles:
+    - mobile-antivirus-app
+    - local-artifact-scanner
+    - security-observation-source
+  authority: local-enforcement
+  inputs:
+    - scoped-mobile-artifacts
+    - signature-and-heuristic-rules
+    - local-security-policy
+  outputs:
+    - scan-results
+    - quarantine-proposals
+    - provenance-tagged-security-events
+  capabilitiesProvided:
+    - artifact.mobile.scan
+    - threat.mobile.observe
+    - quarantine.mobile.propose
+  capabilitiesRequired:
+    - filesystem.mobile.read.scoped
+    - policy.security.read
+    - audit.append
+  dataClasses:
+    - public
+    - private
+    - untrusted
+    - evidence
+  failurePolicy: quarantine
+  promotionPolicy: signed-pr
+  notes: Detection may trigger bounded local protection, but destructive cleanup or global trust changes require explicit policy and approval.
