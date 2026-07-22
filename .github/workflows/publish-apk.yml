@@ -1,6 +1,8 @@
 name: Repair non-ZIP classification
 
 on:
+  push:
+    branches: [security/public-signing-containment-v1]
   pull_request:
     branches: [main, master]
 
@@ -9,7 +11,7 @@ permissions:
 
 jobs:
   repair:
-    if: github.head_ref == 'security/public-signing-containment-v1'
+    if: github.ref_name == 'security/public-signing-containment-v1' || github.head_ref == 'security/public-signing-containment-v1'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
