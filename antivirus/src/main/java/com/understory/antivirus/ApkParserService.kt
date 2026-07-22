@@ -35,15 +35,19 @@ class ApkParserService : Service() {
             val reply = msg.replyTo ?: return
             val pfd = msg.data.getParcelable(KEY_APK, ParcelFileDescriptor::class.java)
             val result = if (pfd == null) {
-                ApkParseResult(null, null, 0L, emptyList(), emptyList(), listOf(ApkParseResult.FLAG_BAD_ZIP))
+                badZipResult()
             } else {
                 try {
-                    RawApkParser.parse(pfd)
+                    if (ApkInputGuard.hasZipLocalFileHeader(pfd)) {
+                        RawApkParser.parse(pfd)
+                    } else {
+                        badZipResult()
+                    }
                 } catch (_: Exception) {
                     // Structured failure. Errors (OOM, stack overflow)
                     // intentionally fall through and kill this process —
                     // the client's death path covers those.
-                    ApkParseResult(null, null, 0L, emptyList(), emptyList(), listOf(ApkParseResult.FLAG_BAD_ZIP))
+                    badZipResult()
                 } finally {
                     runCatching { pfd.close() }
                 }
@@ -55,6 +59,15 @@ class ApkParserService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder = Messenger(handler).binder
+
+    private fun badZipResult() = ApkParseResult(
+        null,
+        null,
+        0L,
+        emptyList(),
+        emptyList(),
+        listOf(ApkParseResult.FLAG_BAD_ZIP),
+    )
 
     companion object {
         const val MSG_PARSE = 1

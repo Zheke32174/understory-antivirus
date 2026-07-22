@@ -7,14 +7,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * Verifies the shipped seed (`res/raw/blocklist_seed.ubl`) is a valid signed
- * blob under the compiled-in [BlocklistKeys] public key, and that a single
- * flipped byte in the signature is rejected. Robolectric supplies the resource
- * loader and Android's org.json.
+ * blob under the compiled-in [BlocklistKeys] public key, and that modified
+ * payload/signature bytes are rejected.
+ *
+ * Robolectric 4.13 supports through API 34. This resource/cryptographic fixture
+ * is pinned to that emulation level while production remains targetSdk 35.
  */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class BlocklistSeedTest {
 
     private fun seedBytes(): ByteArray {
@@ -28,17 +32,13 @@ class BlocklistSeedTest {
         val p = r.payload!!
         assertEquals(1, p.schema)
         assertEquals(1, p.serial)
-        // Seed ships cert-hash entries for the Lucky-Patcher family.
         assertTrue(p.certSha256.isNotEmpty())
-        // Every cert hash is 64-hex.
         assertTrue(p.certSha256.all { it.length == 64 && it.all { c -> c in '0'..'9' || c in 'a'..'f' } })
-        // Labels are present and keyed by a hash in the set.
         assertTrue(p.labels.keys.all { it in p.certSha256 })
     }
 
     @Test fun flippedSignatureByteRejected() {
         val bytes = seedBytes()
-        // Flip the last byte (inside the signature region).
         bytes[bytes.size - 1] = (bytes[bytes.size - 1].toInt() xor 0xFF).toByte()
         val r = BlocklistCodec.verifyAndParse(bytes)
         assertFalse(r.isOk)
@@ -47,7 +47,6 @@ class BlocklistSeedTest {
 
     @Test fun flippedPayloadByteRejected() {
         val bytes = seedBytes()
-        // Flip a byte inside the payload (offset 8 = first payload byte).
         bytes[8] = (bytes[8].toInt() xor 0x01).toByte()
         val r = BlocklistCodec.verifyAndParse(bytes)
         assertFalse(r.isOk)

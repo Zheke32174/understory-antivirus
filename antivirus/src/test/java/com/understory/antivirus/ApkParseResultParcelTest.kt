@@ -5,13 +5,19 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * Round-trips [ApkParseResult] through a Parcel to prove the v2 appended
  * fields (servicePermissions / receiverPermissions) survive the wire and stay
  * aligned — the append-only invariant the isolated-parser boundary depends on.
+ *
+ * Robolectric 4.13 supports Android API 34. Production still compiles and
+ * targets API 35; this fixture is pinned only to the supported emulation level
+ * because it tests parcel structure rather than Android 15-specific behavior.
  */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class ApkParseResultParcelTest {
 
     @Test fun v2FieldsRoundTrip() {

@@ -7,18 +7,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Structural tests for [RawApkParser] over real ZIP inputs (the fd is a real
- * temp file — Robolectric provides ParcelFileDescriptor). We exercise the ZIP
- * walk's fail-closed flags without hand-crafting binary AXML: the binary-XML
- * decode path is covered by the [RiskRules.analyzeComponents] rules that
- * consume its output.
+ * Structural tests for the isolated APK input boundary and [RawApkParser] over
+ * real ZIP inputs. Robolectric supplies ParcelFileDescriptor and the
+ * application cache directory.
+ *
+ * Robolectric 4.13 supports through API 34. This ZIP/parser fixture is pinned to
+ * that emulation level while production remains targetSdk 35.
  */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class RawApkParserTest {
 
     private fun tempApk(build: (ZipOutputStream) -> Unit): File {
@@ -33,12 +36,13 @@ class RawApkParserTest {
         return pfd.use { RawApkParser.parse(it) }
     }
 
-    @Test fun nonZipFileFlagsBadZip() {
+    @Test fun nonZipFileRejectedByInputGuard() {
         val dir = ApplicationProvider.getApplicationContext<android.content.Context>().cacheDir
         val f = File.createTempFile("notzip", ".apk", dir)
         f.writeText("this is not a zip file at all")
-        val result = parse(f)
-        assertTrue(ApkParseResult.FLAG_BAD_ZIP in result.flags)
+        ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+            assertFalse(ApkInputGuard.hasZipLocalFileHeader(pfd))
+        }
     }
 
     @Test fun missingManifestFlagged() {
@@ -47,9 +51,11 @@ class RawApkParserTest {
             zos.write(ByteArray(16))
             zos.closeEntry()
         }
+        ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+            assertTrue(ApkInputGuard.hasZipLocalFileHeader(pfd))
+        }
         val result = parse(f)
         assertTrue(ApkParseResult.FLAG_BAD_MANIFEST in result.flags)
-        // No cert entries → NO_CERT flag.
         assertTrue(ApkParseResult.FLAG_NO_CERT in result.flags)
     }
 
@@ -61,7 +67,6 @@ class RawApkParserTest {
         }
         val result = parse(f)
         assertTrue(ApkParseResult.FLAG_BAD_MANIFEST in result.flags)
-        // v2 component-permission fields default empty on an unparsed manifest.
         assertTrue(result.servicePermissions.isEmpty())
         assertFalse(result.flags.isEmpty())
     }
