@@ -34,26 +34,23 @@ class ApkParserService : Service() {
             if (msg.what != MSG_PARSE) return
             val reply = msg.replyTo ?: return
             val pfd = msg.data.getParcelable(KEY_APK, ParcelFileDescriptor::class.java)
-            val result = when {
-                pfd == null -> badZipResult()
-                !ApkInputGuard.hasZipLocalFileHeader(pfd) -> badZipResult()
-                else -> {
-                    try {
+            val result = if (pfd == null) {
+                badZipResult()
+            } else {
+                try {
+                    if (ApkInputGuard.hasZipLocalFileHeader(pfd)) {
                         RawApkParser.parse(pfd)
-                    } catch (_: Exception) {
-                        // Structured failure. Errors (OOM, stack overflow)
-                        // intentionally fall through and kill this process —
-                        // the client's death path covers those.
+                    } else {
                         badZipResult()
-                    } finally {
-                        runCatching { pfd.close() }
                     }
+                } catch (_: Exception) {
+                    // Structured failure. Errors (OOM, stack overflow)
+                    // intentionally fall through and kill this process —
+                    // the client's death path covers those.
+                    badZipResult()
+                } finally {
+                    runCatching { pfd.close() }
                 }
-            }
-            if (pfd != null && !pfd.fileDescriptor.valid()) {
-                // Already closed by the parser path. No action required.
-            } else if (pfd != null && result.flags.contains(ApkParseResult.FLAG_BAD_ZIP)) {
-                runCatching { pfd.close() }
             }
             val out = Message.obtain(null, MSG_RESULT)
             out.data = Bundle().apply { putParcelable(KEY_RESULT, result) }
