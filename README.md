@@ -1,6 +1,5 @@
 # understory-antivirus
 
-
 > [!CAUTION]
 > **PUBLIC DEBUG SIGNING INCIDENT:** the former shared debug private key is
 > public. Existing debug APKs and continuous debug releases cannot prove
@@ -8,8 +7,7 @@
 > by the externally held release key can be an authenticated Understory
 > distribution. Tracking: `Zheke32174/understory-common#3`.
 
-
-**Understory APK Check** — an offline, on-demand APK auditor that complements Google Play Protect (it does not replace it). It inspects sideloaded APKs and reviews what your installed apps *can* do: a signed offline deny-list (Lucky-Patcher-family and known repackager signing certs, extensible via a signed import file), permission-shape heuristics, hidden-launcher detection, and enumeration of declared and currently-enabled accessibility / device-admin / notification-listener abusers. Userspace-honest: structural, not behavioral — no real-time process/memory scanning (rootless-impossible), no network, no malware database. An optional opt-in periodic re-check (default off) diffs installed apps every ~6h; findings are advisory, not verdicts.
+**Understory APK Check** — an offline, on-demand APK auditor that complements Google Play Protect (it does not replace it). It inspects sideloaded APKs and reviews what your installed apps *can* do: a signed offline deny-list (Lucky-Patcher-family and known repackager signing certs, extensible via a signed import file), permission-shape heuristics, hidden-launcher detection, and enumeration of declared and currently-enabled accessibility / device-admin / notification-listener abusers. Userspace-honest: structural, not behavioral — no real-time process/memory scanning, no network, no malware database. An optional opt-in periodic re-check (default off) diffs installed apps every ~6h; findings are advisory, not verdicts.
 
 Status: **alpha** (functional; working the release-blockers list in understory-common).
 
@@ -23,7 +21,7 @@ gradle :antivirus:assembleDebug
 # APK: antivirus/build/outputs/apk/debug/antivirus-debug.apk
 ```
 
-CI (GitHub Actions) builds the debug APK + runs unit tests on every push; the APK is attached as a workflow artifact. Debug builds are signed with the committed suite debug keystore so the signing-cert digest matches the suite pin (Tamper.EXPECTED_CERT_SHA256) — installs update-in-place over other suite-pin builds.
+CI assembles a local debug APK and runs the unit-test suite as validation. It does not upload or publish APKs. Local debug signing is developer-specific and asserts no Understory distribution identity.
 
 ## Provenance & suite
 
@@ -37,12 +35,9 @@ Suite-level docs (SUITE_DESIGN, SUITE_ROADMAP, RELEASE_BLOCKERS, SAMSUNG_QUIRKS,
 
 ## Verify your install
 
-Debug APKs cannot be authenticated as Understory distributions. Their signer is
-developer-local, and the former shared debug signer is revoked.
+Debug APKs cannot be authenticated as Understory distributions. Their signer is developer-local, and the former shared debug signer is revoked.
 
-For a future authenticated release, verify the APK certificate with `apksigner`
-and require the release fingerprint recorded in
-`common-security/.../SuitePins.kt`:
+For a future authenticated release, verify the APK certificate with `apksigner` and require the release fingerprint recorded in `common-security/.../SuitePins.kt`:
 
 ```bash
 apksigner verify --print-certs the-downloaded.apk | grep -i 'SHA-256'
@@ -52,6 +47,4 @@ Expected authenticated release certificate:
 
 `59a3dee7feb8262170e4dcabb3dbe7bc323abe8715ab49f5bed5133046a45c4a`
 
-Certificate verification must be combined with an immutable versioned release,
-checksum/provenance verification, and the source commit. No such release receipt
-is claimed by this draft.
+Certificate verification must be combined with an immutable versioned release, checksum/provenance verification, and the source commit. No such release receipt is claimed by this draft.
