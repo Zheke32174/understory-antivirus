@@ -1,57 +1,48 @@
-name: Repair non-ZIP classification
+name: Android validation — no publication
 
 on:
-  push:
-    branches: [security/public-signing-containment-v1]
   pull_request:
+  push:
     branches: [main, master]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: android-validation-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  repair:
-    if: github.ref_name == 'security/public-signing-containment-v1' || github.head_ref == 'security/public-signing-containment-v1'
+  build-test:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: security/public-signing-containment-v1
-          fetch-depth: 1
+          persist-credentials: false
           show-progress: false
-      - name: Add explicit ZIP signature refusal
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('antivirus/src/main/java/com/understory/antivirus/RawApkParser.kt')
-          text = path.read_text()
-          old = '''        var manifestBytes: ByteArray? = null
-        var manifestEntries = 0
-        try {
-            ZipInputStream(BufferedInputStream(NonClosingInputStream(fis))).use { zis ->
-'''
-          new = '''        var manifestBytes: ByteArray? = null
-        var manifestEntries = 0
-        val zipHeader = ByteArray(4)
-        val hasLocalFileHeader = runCatching {
-            readFully(fis.channel, 0, zipHeader)
-            u32(zipHeader, 0) == 0x04034b50L
-        }.getOrDefault(false)
-        if (!hasLocalFileHeader) {
-            flags += ApkParseResult.FLAG_BAD_ZIP
-        } else try {
-            ZipInputStream(BufferedInputStream(NonClosingInputStream(fis))).use { zis ->
-'''
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one phase-2 parser block, found {text.count(old)}')
-          path.write_text(text.replace(old, new))
-          PY
-          git diff --check
-      - name: Commit parser repair
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add antivirus/src/main/java/com/understory/antivirus/RawApkParser.kt
-          git commit -m "Reject non-ZIP input before APK parsing"
-          git push origin HEAD:security/public-signing-containment-v1
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92
+        with:
+          gradle-version: '8.10.2'
+          cache-provider: basic
+      - name: Validate public signing boundary
+        run: python ci/validate-public-signing-boundary.py
+      - name: Install Android SDK components
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-35" "build-tools;35.0.0" > /dev/null
+      - name: Assemble local debug APK
+        run: gradle --no-daemon assembleDebug
+      - name: Run unit tests
+        run: gradle --no-daemon test --console=plain > unit-test.log 2>&1
+      - name: Upload unit-test receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unit-test-receipt-${{ github.sha }}
+          path: unit-test.log
+          if-no-files-found: error
+          retention-days: 14
