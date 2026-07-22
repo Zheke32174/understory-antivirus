@@ -13,8 +13,9 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Structural tests for [RawApkParser] over real ZIP inputs. Robolectric supplies
- * ParcelFileDescriptor and the application cache directory.
+ * Structural tests for the isolated APK input boundary and [RawApkParser] over
+ * real ZIP inputs. Robolectric supplies ParcelFileDescriptor and the
+ * application cache directory.
  *
  * Robolectric 4.13 supports through API 34. This ZIP/parser fixture is pinned to
  * that emulation level while production remains targetSdk 35.
@@ -35,12 +36,13 @@ class RawApkParserTest {
         return pfd.use { RawApkParser.parse(it) }
     }
 
-    @Test fun nonZipFileFlagsBadZip() {
+    @Test fun nonZipFileRejectedByInputGuard() {
         val dir = ApplicationProvider.getApplicationContext<android.content.Context>().cacheDir
         val f = File.createTempFile("notzip", ".apk", dir)
         f.writeText("this is not a zip file at all")
-        val result = parse(f)
-        assertTrue(ApkParseResult.FLAG_BAD_ZIP in result.flags)
+        ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+            assertFalse(ApkInputGuard.hasZipLocalFileHeader(pfd))
+        }
     }
 
     @Test fun missingManifestFlagged() {
@@ -48,6 +50,9 @@ class RawApkParserTest {
             zos.putNextEntry(ZipEntry("classes.dex"))
             zos.write(ByteArray(16))
             zos.closeEntry()
+        }
+        ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+            assertTrue(ApkInputGuard.hasZipLocalFileHeader(pfd))
         }
         val result = parse(f)
         assertTrue(ApkParseResult.FLAG_BAD_MANIFEST in result.flags)
