@@ -25,6 +25,8 @@ object ScanNotifier {
     const val CHANNEL_ID = "av-periodic-scan"
     private const val NOTIF_ID_PERIODIC = 1001
     private const val NOTIF_ID_INSTALL = 1002
+    private const val NOTIF_ID_SNORT = 1003
+    private const val NOTIF_ID_VT = 1004
 
     /** Whether a notification may be posted (runtime permission granted). */
     fun canPost(ctx: Context): Boolean =
@@ -54,6 +56,28 @@ object ScanNotifier {
             NOTIF_ID_INSTALL,
             ctx.getString(R.string.av_notif_install_title),
             ctx.getString(R.string.av_notif_install_body, report.packageName),
+        )
+    }
+
+    /** Post the passive Snort pass result — [packages] with HIGH-band hits. */
+    fun postSnort(ctx: Context, packages: List<String>) {
+        if (packages.isEmpty() || !canPost(ctx)) return
+        val text = if (packages.size == 1) {
+            ctx.getString(R.string.av_notif_snort_one, packages.first())
+        } else {
+            ctx.getString(R.string.av_notif_snort_many, packages.size)
+        }
+        post(ctx, NOTIF_ID_SNORT, ctx.getString(R.string.av_notif_title), text)
+    }
+
+    /** Post the periodic VirusTotal result — [count] flagged sideloads. */
+    fun postVt(ctx: Context, count: Int) {
+        if (count <= 0 || !canPost(ctx)) return
+        post(
+            ctx,
+            NOTIF_ID_VT,
+            ctx.getString(R.string.av_notif_title),
+            ctx.getString(R.string.av_notif_vt, count),
         )
     }
 

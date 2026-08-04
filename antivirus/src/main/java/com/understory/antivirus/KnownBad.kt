@@ -21,9 +21,22 @@ package com.understory.antivirus
  */
 object KnownBad {
 
-    /** True if [sha256] is in the APK deny-list. */
+    /**
+     * True if [sha256] is in the APK deny-list — the signed .ubl list OR any
+     * user-imported auxiliary database ([AuxDatabases]). Aux provenance is
+     * recovered via [auxMatchApk] so findings can name the source database.
+     */
     fun isKnownBadApk(sha256: String): Boolean =
-        BlocklistStore.apkHashes().contains(sha256.lowercase())
+        BlocklistStore.apkHashes().contains(sha256.lowercase()) ||
+            AuxDatabases.matchApk(sha256) != null
+
+    /** The aux-database match for [sha256], if the hit came from an aux DB. */
+    internal fun auxMatchApk(sha256: String): AuxDatabases.Match? =
+        AuxDatabases.matchApk(sha256)
+
+    /** True when ANY loaded database carries APK-hash entries (hash gate). */
+    fun hasApkHashDefinitions(): Boolean =
+        BlocklistStore.apkHashes().isNotEmpty() || AuxDatabases.totalEntries() > 0
 
     /** True if [sha256] is in the cert deny-list. */
     fun isKnownBadCert(sha256: String): Boolean =

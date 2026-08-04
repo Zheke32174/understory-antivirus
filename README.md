@@ -1,6 +1,13 @@
 # understory-antivirus
 
-**Understory APK Check** — an offline, on-demand APK auditor that complements Google Play Protect (it does not replace it). It inspects sideloaded APKs and reviews what your installed apps *can* do: a signed offline deny-list (Lucky-Patcher-family and known repackager signing certs, extensible via a signed import file), permission-shape heuristics, hidden-launcher detection, and enumeration of declared and currently-enabled accessibility / device-admin / notification-listener abusers. Userspace-honest: structural, not behavioral — no real-time process/memory scanning (rootless-impossible), no network, no malware database. An optional opt-in periodic re-check (default off) diffs installed apps every ~6h; findings are advisory, not verdicts.
+**Understory APK Check** — a local-first, on-demand APK auditor that complements Google Play Protect (it does not replace it). It inspects sideloaded APKs and reviews what your installed apps *can* do: a signed offline deny-list (Lucky-Patcher-family and known repackager signing certs, extensible via a signed import file), permission-shape heuristics, hidden-launcher detection, and enumeration of declared and currently-enabled accessibility / device-admin / notification-listener abusers. Userspace-honest: structural, not behavioral — no real-time process/memory scanning (rootless-impossible). Findings are advisory, not verdicts.
+
+On top of the base auditor sit four opt-in check layers (all default off):
+
+- **Multiple virus databases** — import third-party SHA-256 hash feeds (MalwareBazaar dumps, `hash,label` CSV, ClamAV-style `hash:size:name`) as separate named databases alongside the signed deny-list. Every scan checks all of them; a hit always names its source database. Imports are unsigned — trust the feed you import.
+- **Passive Snort-format signature rules** — a Snort-rule-subset engine (`content`/`nocase`/hex/`pcre`/`classtype`/`sid`) applied *passively* to installed APK bytes, with a built-in Android-malware seed ruleset and `.rules` import. Honest scope: this is a content-signature scanner speaking the Snort format, **not** a network IDS — a rootless app cannot capture packets and this one never claims to.
+- **VirusTotal lookups** — hash-only lookups (`GET /files/{sha256}`, never an upload) against the user's own free API key. This is the app's sole network feature and the reason `INTERNET` is now declared: the network path is dead code until a key is pasted and the toggle flipped; results are cached on-device.
+- **Independent periodic checks** — each layer has its own WorkManager schedule and toggle: the original ~6h new/changed-app diff, a daily full-device audit (so newly imported definitions retroactively catch existing apps), a 12h incremental Snort pass, and a daily rate-limit-respecting VirusTotal pass over sideloaded apps.
 
 Status: **alpha** (functional; working the release-blockers list in understory-common).
 

@@ -34,6 +34,7 @@ class PeriodicScanWorker(
 
     private fun scan(): Result {
         BlocklistStore.ensureLoaded(applicationContext)
+        AuxDatabases.ensureLoaded(applicationContext)
         val pm = applicationContext.packageManager
         val previous = loadSnapshot()
         val current = mutableMapOf<String, PkgStamp>()

@@ -728,9 +728,32 @@ private fun DefinitionsSection(pad: PaddingValues) {
     var alertsGranted by remember { mutableStateOf(PeriodicScan.alertsAllowed(ctx)) }
     var installAlertsOn by remember { mutableStateOf(PeriodicScan.installAlertsEnabled(ctx)) }
 
+    // Additional check layers: aux databases, Snort rules, VirusTotal, and
+    // the independent periodic-check toggles.
+    var auxDbs by remember { mutableStateOf<List<AuxDatabases.Meta>>(emptyList()) }
+    var auxResult by remember { mutableStateOf<String?>(null) }
+    var auxIsError by remember { mutableStateOf(false) }
+    var snortMeta by remember { mutableStateOf<SnortRuleStore.Meta?>(null) }
+    var snortLastScan by remember { mutableStateOf<SnortScanLog.Snapshot?>(null) }
+    var snortResult by remember { mutableStateOf<String?>(null) }
+    var snortIsError by remember { mutableStateOf(false) }
+    var vtConfigured by remember { mutableStateOf(VirusTotal.isConfigured(ctx)) }
+    var vtEnabled by remember { mutableStateOf(VirusTotal.isEnabled(ctx)) }
+    var checkFullAudit by remember { mutableStateOf(ScanSchedules.isEnabled(ctx, ScanSchedules.Check.FULL_AUDIT)) }
+    var checkSnort by remember { mutableStateOf(ScanSchedules.isEnabled(ctx, ScanSchedules.Check.SNORT)) }
+    var checkVt by remember { mutableStateOf(ScanSchedules.isEnabled(ctx, ScanSchedules.Check.VIRUSTOTAL)) }
+
     LaunchedEffect(Unit) {
-        withContext(Bg.io) { BlocklistStore.ensureLoaded(ctx) }
+        withContext(Bg.io) {
+            BlocklistStore.ensureLoaded(ctx)
+            AuxDatabases.ensureLoaded(ctx)
+            SnortRuleStore.ensureLoaded(ctx)
+            ScanSchedules.ensureScheduled(ctx)
+        }
         defsMeta = BlocklistStore.meta()
+        auxDbs = AuxDatabases.list()
+        snortMeta = SnortRuleStore.meta()
+        snortLastScan = withContext(Bg.io) { SnortScanLog.load(ctx) }
     }
 
     val requestNotif = rememberLauncherForActivityResult(
@@ -793,6 +816,73 @@ private fun DefinitionsSection(pad: PaddingValues) {
         runImport(uri, false)
     }
 
+    val importAuxDb = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri: Uri? ->
+        TransientFlight.end()
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val name = withContext(Bg.io) { safDisplayName(ctx, uri) }
+            val outcome = withContext(Bg.io) {
+                runCatching {
+                    ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?.let { AuxDatabases.import(ctx, name, it, todayIso()) }
+                }.getOrNull()
+            }
+            when (outcome) {
+                is AuxDatabases.ImportResult.Imported -> {
+                    auxDbs = AuxDatabases.list()
+                    auxIsError = false
+                    auxResult = ctx.getString(
+                        R.string.av_auxdb_imported,
+                        outcome.meta.name, outcome.meta.count, outcome.skipped,
+                    )
+                }
+                is AuxDatabases.ImportResult.TooLarge -> {
+                    auxIsError = true
+                    auxResult = ctx.getString(R.string.av_auxdb_too_large)
+                }
+                is AuxDatabases.ImportResult.NotAHashList, null -> {
+                    auxIsError = true
+                    auxResult = ctx.getString(R.string.av_auxdb_rejected)
+                }
+            }
+        }
+    }
+
+    val importSnort = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri: Uri? ->
+        TransientFlight.end()
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val outcome = withContext(Bg.io) {
+                runCatching {
+                    ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?.let { SnortRuleStore.importFrom(ctx, it) }
+                }.getOrNull()
+            }
+            when (outcome) {
+                is SnortRuleStore.ImportResult.Imported -> {
+                    snortMeta = outcome.meta
+                    snortIsError = false
+                    snortResult = ctx.getString(
+                        R.string.av_snort_imported,
+                        outcome.meta.userCount, outcome.meta.skipped,
+                    )
+                }
+                is SnortRuleStore.ImportResult.TooLarge -> {
+                    snortIsError = true
+                    snortResult = ctx.getString(R.string.av_auxdb_too_large)
+                }
+                is SnortRuleStore.ImportResult.NoValidRules, null -> {
+                    snortIsError = true
+                    snortResult = ctx.getString(R.string.av_snort_rejected)
+                }
+            }
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -812,6 +902,77 @@ private fun DefinitionsSection(pad: PaddingValues) {
             transientResult = importResult,
             isError = importIsError,
             onImportOlder = pendingOlderUri?.let { uri -> { runImport(uri, true) } },
+        )
+
+        SuiteSectionHeader(stringResource(R.string.av_section_databases))
+        AuxDatabasesCard(
+            databases = auxDbs,
+            onImport = {
+                TransientFlight.begin()
+                runCatching { importAuxDb.launch(arrayOf("*/*")) }
+                    .onFailure { TransientFlight.end() }
+            },
+            onRemove = { db ->
+                scope.launch {
+                    withContext(Bg.io) { AuxDatabases.remove(ctx, db.id) }
+                    auxDbs = AuxDatabases.list()
+                    auxIsError = false
+                    auxResult = ctx.getString(R.string.av_auxdb_removed, db.name)
+                }
+            },
+            transientResult = auxResult,
+            isError = auxIsError,
+        )
+        SnortRulesCard(
+            meta = snortMeta,
+            lastScan = snortLastScan,
+            onImport = {
+                TransientFlight.begin()
+                runCatching { importSnort.launch(arrayOf("*/*")) }
+                    .onFailure { TransientFlight.end() }
+            },
+            onRemoveUser = if ((snortMeta?.userCount ?: 0) > 0) {
+                {
+                    scope.launch {
+                        withContext(Bg.io) { SnortRuleStore.removeUserRules(ctx) }
+                        snortMeta = SnortRuleStore.meta()
+                        snortIsError = false
+                        snortResult = ctx.getString(R.string.av_snort_removed)
+                    }
+                }
+            } else {
+                null
+            },
+            transientResult = snortResult,
+            isError = snortIsError,
+        )
+        VirusTotalCard(
+            configured = vtConfigured,
+            enabled = vtEnabled,
+            onSaveKey = { key ->
+                VirusTotal.setApiKey(ctx, key)
+                VirusTotal.setEnabled(ctx, true)
+                vtConfigured = true
+                vtEnabled = VirusTotal.isEnabled(ctx)
+            },
+            onClearKey = {
+                VirusTotal.setApiKey(ctx, "")
+                vtConfigured = false
+                vtEnabled = false
+                // A dead feature must not keep a scheduled check alive.
+                if (checkVt) {
+                    ScanSchedules.setEnabled(ctx, ScanSchedules.Check.VIRUSTOTAL, false)
+                    checkVt = false
+                }
+            },
+            onToggle = { on ->
+                VirusTotal.setEnabled(ctx, on)
+                vtEnabled = VirusTotal.isEnabled(ctx)
+                if (!on && checkVt) {
+                    ScanSchedules.setEnabled(ctx, ScanSchedules.Check.VIRUSTOTAL, false)
+                    checkVt = false
+                }
+            },
         )
 
         SuiteSectionHeader(stringResource(R.string.av_section_scanning))
@@ -843,6 +1004,22 @@ private fun DefinitionsSection(pad: PaddingValues) {
                     }
                 } else {
                     PeriodicScan.setInstallAlertsEnabled(ctx, false); installAlertsOn = false
+                }
+            },
+        )
+
+        SuiteSectionHeader(stringResource(R.string.av_section_checks))
+        PeriodicChecksCard(
+            fullAuditOn = checkFullAudit,
+            snortOn = checkSnort,
+            vtOn = checkVt,
+            vtAvailable = vtEnabled,
+            onToggle = { check, on ->
+                ScanSchedules.setEnabled(ctx, check, on)
+                when (check) {
+                    ScanSchedules.Check.FULL_AUDIT -> checkFullAudit = on
+                    ScanSchedules.Check.SNORT -> checkSnort = on
+                    ScanSchedules.Check.VIRUSTOTAL -> checkVt = on
                 }
             },
         )
@@ -935,3 +1112,20 @@ private fun OnNewInstall(onResult: (ApkAnalyzer.Report) -> Unit) {
         }
     }
 }
+
+/**
+ * The display name of a SAF-picked document, for labeling an imported aux
+ * database. Falls back to the last path segment, then a fixed name — never
+ * fails an import over a missing label.
+ */
+private fun safDisplayName(ctx: android.content.Context, uri: Uri): String = runCatching {
+    ctx.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+        if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
+    }
+}.getOrNull() ?: uri.lastPathSegment ?: "imported database"
+
+/** Today as yyyy-MM-dd for the aux-database provenance line. */
+private fun todayIso(): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+        .format(java.util.Date())

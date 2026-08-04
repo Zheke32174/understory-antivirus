@@ -95,6 +95,7 @@ object ApkAnalyzer {
      */
     fun analyzeUri(ctx: Context, uri: Uri): Report {
         BlocklistStore.ensureLoaded(ctx)
+        AuxDatabases.ensureLoaded(ctx)
         val cache = File(ctx.cacheDir, "av-scan-${System.nanoTime()}.apk")
         try {
             val md = MessageDigest.getInstance("SHA-256")
@@ -118,7 +119,11 @@ object ApkAnalyzer {
             // Single-file SAF scan always hashes — the hash is shown to the
             // user as evidence, and it's one file, not a whole-device pass.
             val apkSha = md.digest().joinToString("") { "%02x".format(it) }
-            return reportFromIsolatedParse(ApkParserClient.parse(ctx, cache), apkSha)
+            val report = reportFromIsolatedParse(ApkParserClient.parse(ctx, cache), apkSha)
+            // Advisory VirusTotal note from the local cache only — a SAF scan
+            // never triggers a network call itself.
+            val vtNote = VirusTotal.cachedVerdictNote(ctx, report.apkSha256)
+            return if (vtNote != null) report.copy(notes = report.notes + vtNote) else report
         } finally {
             runCatching { cache.delete() }
         }
@@ -189,6 +194,7 @@ object ApkAnalyzer {
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
     ): AuditResult {
         BlocklistStore.ensureLoaded(ctx)
+        AuxDatabases.ensureLoaded(ctx)
         val enabled = EnabledAbusers.snapshot(ctx)
         val pm = ctx.packageManager
         val all = pm.getInstalledApplications(0)
@@ -414,8 +420,14 @@ object ApkAnalyzer {
 
         // Cert digest is cheap (one already-parsed cert) — always computed.
         val certSha = signingCertSha256(info)
-        // APK hash is only paid when APK-hash definitions can actually match.
-        val apkSha = if (BlocklistStore.apkHashes().isNotEmpty()) sha256(apkFile) else null
+        // APK hash is only paid when APK-hash definitions can actually match
+        // (signed .ubl entries OR any imported aux database) — or when the
+        // VirusTotal cache could carry a verdict for it.
+        val apkSha = if (KnownBad.hasApkHashDefinitions() || VirusTotal.isEnabled(ctx)) {
+            sha256(apkFile)
+        } else {
+            null
+        }
 
         val notes = mutableListOf<String>()
         val verdict = when {
@@ -431,6 +443,8 @@ object ApkAnalyzer {
             findings.any { it.severity == RiskRules.Severity.HIGH } -> Verdict.SUSPICIOUS
             else -> Verdict.CLEAN
         }
+        // Advisory VirusTotal note from the local cache (no network here).
+        VirusTotal.cachedVerdictNote(ctx, apkSha)?.let { notes += it }
         @Suppress("DEPRECATION")
         val versionCode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P)
             info.longVersionCode
@@ -558,14 +572,23 @@ object ApkAnalyzer {
         return out
     }
 
-    /** Legible KNOWN_BAD note, naming the matched definition label when known. */
+    /**
+     * Legible KNOWN_BAD note, naming the matched definition label when known
+     * and — for aux-database hits — the source database, so an unsigned
+     * imported feed's match is never mistaken for the signed suite list.
+     */
     private fun knownBadNote(hash: String, kind: String): String {
         val label = KnownBad.labelFor(hash)
-        return if (label != null) {
-            "$kind matches the deny-list: $label."
-        } else {
-            "$kind matches the deny-list."
+        if (label != null) return "$kind matches the deny-list: $label."
+        val aux = KnownBad.auxMatchApk(hash)
+        if (aux != null) {
+            return if (aux.label != null) {
+                "$kind matches imported database “${aux.dbName}”: ${aux.label}."
+            } else {
+                "$kind matches imported database “${aux.dbName}”."
+            }
         }
+        return "$kind matches the deny-list."
     }
 
     /** SHA-256 of the APK bytes. Returns null on read failure. */
@@ -589,7 +612,7 @@ object ApkAnalyzer {
      * direction (we'd rather show a benign sideload note than silently trust an
      * unknown installer).
      */
-    private val TRUSTED_INSTALLERS = setOf(
+    internal val TRUSTED_INSTALLERS = setOf(
         "com.android.vending", // Google Play
         "com.google.android.packageinstaller",
         "com.google.android.feedback",

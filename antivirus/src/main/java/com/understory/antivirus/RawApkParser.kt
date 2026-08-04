@@ -67,9 +67,9 @@ internal object RawApkParser {
         // v1 (JAR) signature blocks.
         var manifestBytes: ByteArray? = null
         var manifestEntries = 0
+        var entries = 0
         try {
             ZipInputStream(BufferedInputStream(NonClosingInputStream(fis))).use { zis ->
-                var entries = 0
                 while (true) {
                     val entry = zis.nextEntry ?: break
                     require(++entries <= MAX_ZIP_ENTRIES) { "too many zip entries" }
@@ -97,6 +97,13 @@ internal object RawApkParser {
                 }
             }
         } catch (_: Exception) {
+            flags += ApkParseResult.FLAG_BAD_ZIP
+        }
+        // ZipInputStream treats a missing local-header signature as
+        // end-of-stream rather than an error, so a file that isn't a zip at
+        // all "walks" cleanly with zero entries. No real APK has zero entries
+        // — flag it as a bad zip, not a missing manifest.
+        if (entries == 0 && ApkParseResult.FLAG_BAD_ZIP !in flags) {
             flags += ApkParseResult.FLAG_BAD_ZIP
         }
         if (manifestEntries > 1) flags += ApkParseResult.FLAG_DUPLICATE_MANIFEST
