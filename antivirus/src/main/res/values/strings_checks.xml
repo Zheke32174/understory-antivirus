@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Strings for the additional check layers: aux databases, Snort-format
+     passive rules, VirusTotal, and the independent periodic checks. -->
+<resources>
+
+    <!-- Auxiliary virus databases -->
+    <string name="av_auxdb_title">Additional virus databases</string>
+    <string name="av_auxdb_none">No additional databases imported. The signed suite deny-list above always applies.</string>
+    <string name="av_auxdb_count">%1$d database(s), %2$d hashes total — checked on every scan alongside the signed deny-list.</string>
+    <string name="av_auxdb_row">%1$s — %2$d hashes (imported %3$s)</string>
+    <string name="av_auxdb_remove">Remove %1$s</string>
+    <string name="av_auxdb_import">Import hash database</string>
+    <string name="av_auxdb_formats">Accepts SHA-256 hash lists: one hash per line (MalwareBazaar dumps), hash,label CSV, or ClamAV-style hash:size:name. Imports are unsigned — trust the feed you import.</string>
+    <string name="av_auxdb_imported">Imported “%1$s”: %2$d hashes (%3$d malformed lines skipped).</string>
+    <string name="av_auxdb_rejected">Not a recognizable hash list — nothing imported.</string>
+    <string name="av_auxdb_too_large">File too large to import.</string>
+    <string name="av_auxdb_removed">Removed “%1$s”.</string>
+
+    <!-- Snort-format passive rules -->
+    <string name="av_snort_title">Passive signature rules (Snort format)</string>
+    <string name="av_snort_counts">%1$d built-in rules, %2$d imported rules.</string>
+    <string name="av_snort_last_clean">Last passive pass: no rule hits.</string>
+    <string name="av_snort_last_hits">Last passive pass: %1$d rule hit(s).</string>
+    <string name="av_snort_hit_row">%1$s — %2$s (sid %3$d)</string>
+    <string name="av_snort_import">Import .rules file</string>
+    <string name="av_snort_remove_user">Remove imported rules</string>
+    <string name="av_snort_honest">Passive means passive: these signatures scan APK contents already on your device. This is not a network monitor — a rootless app cannot capture traffic, and this one never claims to.</string>
+    <string name="av_snort_imported">Imported rules: %1$d active (%2$d lines skipped).</string>
+    <string name="av_snort_rejected">No valid Snort rules found — nothing imported.</string>
+    <string name="av_snort_removed">Imported rules removed; built-in seed remains active.</string>
+
+    <!-- VirusTotal -->
+    <string name="av_vt_title">VirusTotal lookups (opt-in)</string>
+    <string name="av_vt_explain">Checks file hashes against VirusTotal\'s multi-engine database. Requires your own free API key. What leaves the device: the SHA-256 hash of a scanned APK — never the file itself. Off by default; without a key this app opens no network connection at all.</string>
+    <string name="av_vt_key_label">VirusTotal API key</string>
+    <string name="av_vt_key_save">Save key</string>
+    <string name="av_vt_key_set">API key saved on this device.</string>
+    <string name="av_vt_key_clear">Clear key &amp; disable</string>
+    <string name="av_vt_toggle_label">Enable VirusTotal lookups</string>
+    <string name="av_vt_toggle_on">Hash lookups active during scans; results are cached on-device.</string>
+    <string name="av_vt_toggle_off">No lookups — the network path stays dead.</string>
+
+    <!-- Independent periodic checks -->
+    <string name="av_checks_title">Periodic checks</string>
+    <string name="av_check_full_audit">Daily full audit</string>
+    <string name="av_check_full_audit_sub">Re-runs the complete analysis over every user app daily, so newly imported definitions catch already-installed apps.</string>
+    <string name="av_check_snort">Passive signature pass (12h)</string>
+    <string name="av_check_snort_sub">Streams installed APKs through the active Snort-format ruleset. Incremental — unchanged apps are skipped.</string>
+    <string name="av_check_vt">VirusTotal check (daily)</string>
+    <string name="av_check_vt_sub">Looks up sideloaded apps\' hashes on VirusTotal. Rate-limited and capped per run; cached results are free.</string>
+    <string name="av_check_vt_unavailable">Configure and enable VirusTotal above first.</string>
+
+    <!-- Notifications -->
+    <string name="av_notif_snort_one">Signature rule hit in %1$s — open to review</string>
+    <string name="av_notif_snort_many">Signature rule hits in %1$d apps — open to review</string>
+    <string name="av_notif_vt">VirusTotal flags %1$d installed app(s) — open to review</string>
+
+    <!-- Section headers -->
+    <string name="av_section_databases">More databases &amp; rules</string>
+    <string name="av_section_checks">Periodic checks</string>
+
+</resources>

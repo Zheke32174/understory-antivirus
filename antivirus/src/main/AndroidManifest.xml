@@ -33,11 +33,18 @@
       installed apps and surfacing risky permission combinations.
       Without it the installed-app-audit feature can't run.
 
+      INTERNET is declared for exactly ONE opt-in feature: VirusTotal
+      hash lookups (VirusTotal.kt / VtScanWorker.kt). The network path is
+      dead code until the user pastes their own API key AND flips the
+      enable toggle — no default key ships, so out of the box this app
+      still never opens a socket. Lookups are hash-only (never an APK
+      upload), HTTPS-only (cleartext denied in network_security_config).
+      The signed deny-list still updates ONLY via SAF import
+      (BlocklistCodec/BlocklistStore) — definitions never sync over the
+      network. ACCESS_NETWORK_STATE stays stripped; WorkManager's NETWORK
+      constraint on the VT worker doesn't need it app-side.
+
       Explicitly NOT requesting:
-        - INTERNET: there is NO network path at all. The signed deny-list
-          seed ships in-APK; updates arrive ONLY as a signed .ubl file the
-          user imports via SAF (BlocklistCodec/BlocklistStore). Never a
-          background sync, never an HTTPS fetch.
         - READ_MEDIA_*: file scanning uses SAF (ACTION_OPEN_DOCUMENT) so
           per-URI grants suffice.
         - ACCESSIBILITY: on-screen text scanning is explicitly out of
@@ -46,8 +53,8 @@
           hold any of those slots ourselves.
     -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-    <!-- IP / general networking -->
-    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <!-- IP / general networking — INTERNET only, for the opt-in VT lookup. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" tools:node="remove" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" tools:node="remove" />

@@ -1,0 +1,38 @@
+# Understory APK Check — seed Snort-format passive ruleset.
+#
+# These rules are applied PASSIVELY to installed APK bytes (see SnortRules.kt
+# for the honest scope: this is a content-signature scanner speaking the Snort
+# rule format, not a network IDS — rootless Android cannot capture packets).
+# Header address/port/direction fields are parsed for shape only.
+#
+# sid range 9000001+ is the suite-local range (well clear of registered
+# community sid space).
+
+# Metasploit Android payload — the stock stager's class path appears verbatim
+# in the dex of msfvenom-built APKs and trojanized repackages.
+alert tcp any any -> any any (msg:"Metasploit Android payload class path"; content:"com/metasploit/stage/Payload"; classtype:trojan-activity; sid:9000001; rev:1;)
+
+# AhMyth RAT — open-source Android RAT widely repackaged into trojan builds.
+alert tcp any any -> any any (msg:"AhMyth RAT class path"; content:"ahmyth/mine/king/ahmyth"; nocase; classtype:trojan-activity; sid:9000002; rev:1;)
+
+# SpyNote / DroidJack family server class path markers.
+alert tcp any any -> any any (msg:"DroidJack RAT class path"; content:"net/droidjack/server"; nocase; classtype:trojan-activity; sid:9000003; rev:1;)
+
+# Frida gadget embedded in the APK — an app shipping its own instrumentation
+# engine is either a test build or carrying a hooking payload.
+alert tcp any any -> any any (msg:"Embedded Frida gadget"; content:"frida-gadget"; nocase; classtype:policy-violation; sid:9000004; rev:1;)
+
+# Lucky Patcher's own class namespace inside a scanned APK (repackager
+# artifacts embed it) — complements the cert deny-list.
+alert tcp any any -> any any (msg:"Lucky Patcher repackager artifact"; content:"com/chelpus/"; classtype:policy-violation; sid:9000005; rev:1;)
+
+# Xposed bridge loaded by an ordinary app (module loaders declare it
+# legitimately; a non-module app embedding it is hiding hook capability).
+alert tcp any any -> any any (msg:"Embedded Xposed bridge reference"; content:"de/robv/android/xposed/XposedBridge"; classtype:policy-violation; sid:9000006; rev:1;)
+
+# Runtime su invocation strings — an unrooted-market app probing for root.
+alert tcp any any -> any any (msg:"Hardcoded su binary path"; content:"/system/xbin/su"; classtype:policy-violation; sid:9000007; rev:1;)
+
+# DEX-inside-DEX loading marker plus the classic dropper entry — an APK that
+# carries a secondary payload it decrypts and class-loads at runtime.
+alert tcp any any -> any any (msg:"DexClassLoader with embedded payload path"; content:"DexClassLoader"; content:"/payload"; nocase; classtype:trojan-activity; sid:9000008; rev:1;)
