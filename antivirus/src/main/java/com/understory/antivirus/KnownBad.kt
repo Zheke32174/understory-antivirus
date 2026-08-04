@@ -31,7 +31,7 @@ object KnownBad {
             AuxDatabases.matchApk(sha256) != null
 
     /** The aux-database match for [sha256], if the hit came from an aux DB. */
-    fun auxMatchApk(sha256: String): AuxDatabases.Match? =
+    internal fun auxMatchApk(sha256: String): AuxDatabases.Match? =
         AuxDatabases.matchApk(sha256)
 
     /** True when ANY loaded database carries APK-hash entries (hash gate). */
